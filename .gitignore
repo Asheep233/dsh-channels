@@ -17,3 +17,4 @@ tests/m4m5-report.md
 .idea/
 .vscode/
 *.swp
+*.tgz
