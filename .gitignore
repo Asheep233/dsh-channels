@@ -1,0 +1,19 @@
+# Dependencies / build output that should never be committed
+node_modules/
+*.log
+.DS_Store
+coverage/
+
+# Local screenshots contain a real desktop setup; keep them out of the public repo
+docs/
+
+# QA artifacts and reports are local test evidence, not source
+tests/artifacts/
+tests/report.md
+tests/m3-report.md
+tests/m4m5-report.md
+
+# Local editor/OS noise
+.idea/
+.vscode/
+*.swp

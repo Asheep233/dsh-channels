@@ -1,0 +1,6 @@
+# dsh-channels bundle layer: insert this plugin row into the web composition.
+# The entry id must be unique across all bundles; name resolves through the
+# profile's node_modules (link:/file:) or the install scope.
+- insert:
+    - id: dsh-channels
+      name: dsh-channels

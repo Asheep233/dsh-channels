@@ -1,0 +1,73 @@
+{
+  "name": "dsh-channels",
+  "version": "0.2.0",
+  "description": "Discord-style channel IM for DeepSeek Harness: public channels, immutable persistent history, @mention wake, cross-harness HTTP/MCP access.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "build:host": "tsc -p tsconfig.json",
+    "build:client:types": "tsc -p tsconfig.client.json",
+    "build:client": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "~18.3.1",
+    "tsdown": "^0.22.14",
+    "typescript": "^5.9.3"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "channels",
+    "discord",
+    "agent",
+    "mcp",
+    "im"
+  ],
+  "author": "Asheep233",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Asheep233/dsh-channels.git"
+  },
+  "homepage": "https://github.com/Asheep233/dsh-channels#readme",
+  "bugs": {
+    "url": "https://github.com/Asheep233/dsh-channels/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

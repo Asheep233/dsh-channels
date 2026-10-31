@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - name: Verify build artifacts
+        run: |
+          test -f lib/index.js
+          test -f lib/client.js
+          grep -q '__ModuleLoader__' lib/client.js
+          node --input-type=module -e "import('./lib/index.js').then(m => { if (m.name !== 'dsh-channels' || typeof m.apply !== 'function') process.exit(1) })"
