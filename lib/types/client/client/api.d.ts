@@ -32,6 +32,14 @@ export interface ApiInit {
 export interface ChannelView extends ChannelMeta {
     readonly lastSeq?: number;
     readonly unread?: number;
+    readonly memberCount?: number;
+    readonly admins?: readonly string[];
+    readonly muted?: readonly string[];
+    readonly mutedAll?: boolean;
+    readonly maxChars?: number | null;
+    readonly ratePerMinute?: number | null;
+    readonly canManage?: boolean;
+    readonly canAppointAdmins?: boolean;
 }
 /** localStorage 里的浏览器身份（SPEC §8：{participantId, token, handle}）。 */
 export interface StoredIdentity {
@@ -70,6 +78,14 @@ export declare function toHistory(value: unknown, fallbackChannel: string): Hist
 export declare function toMessage(value: unknown): ChannelMessage | null;
 /** /register 的响应 → RegisterResponse。 */
 export declare function toRegister(value: unknown): RegisterResponse | null;
+export interface PolicyFrameData {
+    channel: string;
+    admins: readonly string[];
+    muted: readonly string[];
+    mutedAll: boolean;
+    maxChars: number | null;
+    ratePerMinute: number | null;
+}
 export type IncomingFrame = {
     kind: 'hello';
     channels: ChannelView[];
@@ -83,6 +99,9 @@ export type IncomingFrame = {
 } | {
     kind: 'presence';
     participant: Participant;
+} | {
+    kind: 'policy';
+    policy: PolicyFrameData;
 };
 /**
  * 解析一帧 SSE data（可能是 `{type:'message', message}`，也可能按 SPEC
@@ -102,6 +121,21 @@ export interface HistoryQuery {
 export declare function fetchChannels(token?: string): Promise<ApiResult<ChannelView[]>>;
 export declare function fetchHistory(query: HistoryQuery, token?: string): Promise<ApiResult<HistoryResponse>>;
 export declare function fetchMembers(channel: string, token?: string): Promise<ApiResult<Participant[]>>;
+/** POST /channel-admins (human operator only). */
+export declare function setChannelAdmin(channel: string, handle: string, admin: boolean, token?: string): Promise<ApiResult<ChannelView>>;
+export interface ChannelMuteInput {
+    handle?: string;
+    all?: boolean;
+    muted: boolean;
+}
+/** POST /channel-mute (human operator or channel admin). */
+export declare function setChannelMute(channel: string, input: ChannelMuteInput, token?: string): Promise<ApiResult<ChannelView>>;
+export interface ChannelLimitsInput {
+    maxChars?: number | null;
+    ratePerMinute?: number | null;
+}
+/** POST /channel-limits (human operator or channel admin); null resets a field. */
+export declare function setChannelLimits(channel: string, input: ChannelLimitsInput, token?: string): Promise<ApiResult<ChannelView>>;
 export declare function fetchPins(channel: string, token?: string): Promise<ApiResult<PinWire[]>>;
 export declare function fetchWhoAmI(token?: string): Promise<ApiResult<WhoAmIResponse>>;
 /** POST /register；带 token 时等于「用现有身份认领新 handle」。 */

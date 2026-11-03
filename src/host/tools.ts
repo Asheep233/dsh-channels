@@ -92,6 +92,25 @@ function optionalString(args: ToolArgs, key: string): string | undefined {
 }
 
 /** Resolve (or lazily create) the participant behind the executing agent. */
+/** Compact policy fields for tool responses. */
+function summariseChannelPolicy(channel: {
+  readonly id: string
+  readonly admins: readonly string[]
+  readonly muted: readonly string[]
+  readonly mutedAll: boolean
+  readonly maxChars: number | null
+  readonly ratePerMinute: number | null
+}): Record<string, unknown> {
+  return {
+    channel: channel.id,
+    admins: channel.admins,
+    muted: channel.muted,
+    mutedAll: channel.mutedAll,
+    maxChars: channel.maxChars,
+    ratePerMinute: channel.ratePerMinute,
+  }
+}
+
 async function participantFor(hub: ChannelsHub, exec: ToolExecLike): Promise<Participant> {
   const agent = exec.agent
   if (agent === undefined || typeof agent.id !== 'string' || agent.id.length === 0) {
@@ -186,6 +205,12 @@ function buildDefinitions(hub: ChannelsHub): ToolDefinitionLike[] {
             unread: channel.unread,
             joined: channel.joined,
             memberCount: channel.memberCount,
+            admins: channel.admins,
+            muted: channel.muted,
+            mutedAll: channel.mutedAll,
+            maxChars: channel.maxChars,
+            ratePerMinute: channel.ratePerMinute,
+            canManage: channel.canManage,
             pins: channel.pins,
             ...(channel.announcementId !== undefined ? { announcementId: channel.announcementId } : {}),
           })),
@@ -369,7 +394,7 @@ function buildDefinitions(hub: ChannelsHub): ToolDefinitionLike[] {
 
     tool(
       'channel_members',
-      'List the members of one channel (defaults to #general) with their presence status. Humans are exempt from membership and may see the roster of any channel.',
+      'List the members of one channel (defaults to #general) with presence status plus channel-local flags: admin:true for channel admins, muted:true for members muted in this channel. Humans are exempt from membership and may see the roster of any channel.',
       objectSchema({ channel: { type: 'string', description: 'Channel id (defaults to #general)' } }),
       async (args, exec) => {
         const participant = await participantFor(hub, exec)
@@ -528,6 +553,67 @@ function buildDefinitions(hub: ChannelsHub): ToolDefinitionLike[] {
         const participant = await participantFor(hub, exec)
         const membership = hub.leaveChannel(participant, requireString(args, 'channel'))
         return { ...membership }
+      },
+    ),
+
+    tool(
+      'channel_mute',
+      'Mute a channel member (handle) or every non-admin member (all:true) in one channel. Allowed for the human operator and channel admins; admins cannot mute another admin (only the human can), and humans cannot be muted. Muting affects sending only: the target can still read history and be woken by @mentions. Idempotent.',
+      objectSchema({
+        channel: { type: 'string', description: 'Channel id' },
+        handle: { type: 'string', description: 'Agent handle to mute (required unless all:true)' },
+        all: { type: 'boolean', description: 'true = mute all non-admin members (全员禁言)' },
+      }, ['channel']),
+      async (args, exec) => {
+        const participant = await participantFor(hub, exec)
+        const view = hub.setChannelMute(participant, requireString(args, 'channel'), {
+          ...(argString(args, 'handle') !== undefined ? { handle: argString(args, 'handle') } : {}),
+          ...(args.all !== undefined ? { all: args.all } : {}),
+          muted: true,
+        })
+        return summariseChannelPolicy(view)
+      },
+    ),
+
+    tool(
+      'channel_unmute',
+      'Lift a per-member mute or the all-members mute (全员禁言) in one channel. Allowed for the human operator and channel admins. Idempotent.',
+      objectSchema({
+        channel: { type: 'string', description: 'Channel id' },
+        handle: { type: 'string', description: 'Agent handle to unmute (required unless all:true)' },
+        all: { type: 'boolean', description: 'true = lift the all-members mute' },
+      }, ['channel']),
+      async (args, exec) => {
+        const participant = await participantFor(hub, exec)
+        const view = hub.setChannelMute(participant, requireString(args, 'channel'), {
+          ...(argString(args, 'handle') !== undefined ? { handle: argString(args, 'handle') } : {}),
+          ...(args.all !== undefined ? { all: args.all } : {}),
+          muted: false,
+        })
+        return summariseChannelPolicy(view)
+      },
+    ),
+
+    tool(
+      'channel_set_limits',
+      'Set per-channel posting limits (allowed for the human operator and channel admins): maxChars = per-message character cap (1-8192), ratePerMinute = per-member messages per rolling minute (1-600). Pass 0 to reset a field to the server default. Only agents are limited; the human operator is exempt. Admins can still send while mutedAll is on.',
+      objectSchema({
+        channel: { type: 'string', description: 'Channel id' },
+        maxChars: { type: 'integer', description: 'Max characters per message (1-8192); 0 resets to default' },
+        ratePerMinute: { type: 'integer', description: 'Max messages per member per minute (1-600); 0 resets to default' },
+      }, ['channel']),
+      async (args, exec) => {
+        const participant = await participantFor(hub, exec)
+        const maxChars = argNumber(args, 'maxChars')
+        const ratePerMinute = argNumber(args, 'ratePerMinute')
+        if (maxChars === undefined && ratePerMinute === undefined) {
+          throw new HostError(400, 'invalid_request', 'maxChars and/or ratePerMinute is required')
+        }
+        const view = hub.setChannelLimits(participant, requireString(args, 'channel'), {
+          ...(maxChars !== undefined ? { maxChars: maxChars === 0 ? null : maxChars } : {}),
+          ...(ratePerMinute !== undefined ? { ratePerMinute: ratePerMinute === 0 ? null : ratePerMinute } : {}),
+        })
+        return summariseChannelPolicy(view)
       },
     ),
 

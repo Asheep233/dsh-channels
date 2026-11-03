@@ -21,6 +21,7 @@ import type { WakeReport } from './wake.js';
 import { SessionPrefsService } from './session-prefs.js';
 import type { SessionPrefsPatch } from './session-prefs.js';
 import { MembershipService } from './memberships.js';
+import { ChannelPolicyService } from './policy.js';
 import type { AgentLike, CtxLike, HubLockAcquisition, LoggerLike, ToolsLike } from './util.js';
 export interface ChannelsConfig {
     readonly dataDir: string;
@@ -126,6 +127,8 @@ export declare class ChannelsHub {
     readonly sessionPrefs: SessionPrefsService;
     /** Per-participant channel membership (`<dataDir>/channel-memberships.json`). */
     readonly memberships: MembershipService;
+    /** Per-channel admins / mutes / posting limits (`<dataDir>/channel-policies.json`). */
+    readonly policy: ChannelPolicyService;
     readonly lock: HubLockAcquisition;
     /** False when another live hub owns the data directory (or config says so). */
     readonly writer: boolean;
@@ -135,6 +138,8 @@ export declare class ChannelsHub {
     private readonly timers;
     /** participantId → last throttled activity touch (ms). */
     private readonly activityTouched;
+    /** `${channel}\0${participantId}` → recent send timestamps for per-channel rate limits. */
+    private readonly channelSendStamps;
     /** Handles auto-joined to every (non-archived) channel: config + default-members.json. */
     private readonly defaultMemberHandles;
     /** Unregisters the agent/created|disposed listeners installed by start(). */
@@ -178,11 +183,30 @@ export declare class ChannelsHub {
      * no identity to check, and it is covered by the v1 loopback read trust.
      */
     requireMembership(participant: Participant | null | undefined, channel: string): void;
+    /**
+     * Channel-admin policy gate for a normal message / announcement (SPEC §7.10).
+     * The human operator is exempt from mutes and limits; admins are exempt from
+     * `mutedAll` but can still be muted explicitly by the human operator.
+     */
+    private assertCanSend;
+    /** Per-channel frequency limit (rolling 60s); humans are exempt. */
+    private consumeChannelSendRate;
+    /** True when `actor` may manage channel policy (human operator or channel admin). */
+    isChannelAdmin(actor: Participant | null | undefined, channel: string): boolean;
+    private requireChannelManager;
+    /** Resolve an agent handle that must already be a member of `channel`. */
+    private resolvePolicyTarget;
+    /** Broadcast a policy change to every SSE subscriber. */
+    private broadcastPolicy;
     /** Stored member count for one channel (humans are exempt, not counted). */
     memberCount(channel: string): number;
     listChannels(participant?: Participant | null, options?: {
         includeArchived?: boolean;
     }): ChannelView[];
+    /** Policy columns for one channel view (handles, mute flags, caller abilities). */
+    private policyView;
+    /** One channel view (404 when unknown). */
+    channelView(participant: Participant | null, channel: unknown): ChannelView;
     history(participant: Participant | null, input: HistoryInput): HistoryOutcome;
     /** Pinned messages. Legacy single-argument form treats the caller as anonymous. */
     pins(participant: Participant | null, channel: unknown): {
@@ -241,6 +265,36 @@ export declare class ChannelsHub {
     joinChannel(participant: Participant, channel: unknown): MembershipResponse;
     /** Leave one channel (#general is mandatory → 400). */
     leaveChannel(participant: Participant, channel: unknown): MembershipResponse;
+    /**
+     * Appoint/remove one channel admin. **Human operator only.** The target must
+     * be a non-human member of the channel.
+     *
+     * @returns the updated channel view for `actor`.
+     */
+    setChannelAdmins(actor: Participant, channel: unknown, input: {
+        readonly handle?: unknown;
+        readonly admin?: unknown;
+    }): ChannelView;
+    /**
+     * Mute/unmute every non-admin member (`all: true`) or one member. Allowed for
+     * the human operator and channel admins; admins cannot mute another admin
+     * (only the human can), and humans cannot be muted.
+     *
+     * @returns the updated channel view for `actor`.
+     */
+    setChannelMute(actor: Participant, channel: unknown, input: {
+        readonly handle?: unknown;
+        readonly all?: unknown;
+        readonly muted?: unknown;
+    }): ChannelView;
+    /**
+     * Set per-channel posting limits. `null` resets a field to the server default.
+     * Allowed for the human operator and channel admins.
+     */
+    setChannelLimits(actor: Participant, channel: unknown, input: {
+        readonly maxChars?: unknown;
+        readonly ratePerMinute?: unknown;
+    }): ChannelView;
     /**
      * Full-text search across channels; never advances read cursors.
      *

@@ -54,6 +54,9 @@ export const CHANNEL_TOOL_NAMES = [
   'channel_upload',
   'channel_join',
   'channel_leave',
+  'channel_mute',
+  'channel_unmute',
+  'channel_set_limits',
 ] as const
 
 export type ParticipantKind = 'human' | 'dsh-agent' | 'external'
@@ -125,14 +128,43 @@ export interface ChannelMeta {
   readonly archived?: boolean
 }
 
-/** Channel metadata plus the caller's view (unread + membership). */
+/**
+ * Per-channel admin policy (SPEC §7.10). `admins` / `muted` are participant ids
+ * in the store; API views map them to handles.
+ */
+export interface ChannelPolicy {
+  readonly admins: readonly string[]
+  readonly muted: readonly string[]
+  readonly mutedAll: boolean
+  /** Per-message character cap; null = server default. */
+  readonly maxChars: number | null
+  /** Per-participant messages per rolling minute; null = server default. */
+  readonly ratePerMinute: number | null
+}
+
+/** Channel metadata plus the caller's view (unread + membership + policy). */
 export interface ChannelView extends ChannelMeta {
   readonly lastSeq: number
   readonly unread: number
   /** True when the caller may read/write this channel (humans always true). */
   readonly joined: boolean
   readonly memberCount: number
+  /** Channel admins as handles (only the human operator can appoint them). */
+  readonly admins: readonly string[]
+  /** Explicitly muted members as handles. */
+  readonly muted: readonly string[]
+  readonly mutedAll: boolean
+  readonly maxChars: number | null
+  readonly ratePerMinute: number | null
+  /** True when the caller is the human operator or an admin of this channel. */
+  readonly canManage: boolean
+  /** True when the caller may appoint/remove admins (human operator only). */
+  readonly canAppointAdmins: boolean
 }
+
+/** Bounds accepted by POST /channel-limits and channel_set_limits. */
+export const MAX_CHANNEL_TEXT_CHARS = 8192
+export const MAX_CHANNEL_RATE_PER_MINUTE = 600
 
 export interface MembershipResponse {
   readonly channel: string
@@ -152,6 +184,10 @@ export interface Participant {
   /** SHA-256 of the bearer token; never returned by any API. */
   readonly tokenHash?: string
   readonly binding?: ParticipantBinding
+  /** Only set on per-channel member lists: this participant is a channel admin. */
+  readonly admin?: boolean
+  /** Only set on per-channel member lists: this participant is muted here. */
+  readonly muted?: boolean
 }
 
 export interface RegisterRequest {
@@ -236,7 +272,17 @@ export interface PresenceFrame {
   readonly participant: Participant
 }
 
-export type StreamFrame = HelloFrame | MessageFrame | ChannelFrame | PresenceFrame
+export interface PolicyFrame {
+  readonly type: 'policy'
+  readonly channel: string
+  readonly admins: readonly string[]
+  readonly muted: readonly string[]
+  readonly mutedAll: boolean
+  readonly maxChars: number | null
+  readonly ratePerMinute: number | null
+}
+
+export type StreamFrame = HelloFrame | MessageFrame | ChannelFrame | PresenceFrame | PolicyFrame
 
 const HANDLE_RE = /^[a-z0-9_-]{2,24}$/
 

@@ -15,9 +15,10 @@ A self-contained DSH plugin (host half + browser half), with no runtime dependen
 - **Attachments** — images and files (raw upload; 25 MB/file, 10 per message; images inline, everything else forced download; SVG/HTML never inline).
 - **Search** — case-insensitive, multi-term AND, per-channel or global, ±60-char snippets with jump-to-message.
 - **Per-session switches** — hide the whole channel surface from one session (`hidden`: all channel tools masked + no wake) or mute its wake-ups only (`muted`) from the session row context menu.
+- **Channel administration** — the human operator appoints channel admins; an admin can **mute everyone** (全员禁言) or individual agents, and set per-channel **message length cap** and **frequency cap**. Admins and humans can still speak while everyone else is muted; the human operator is exempt from mutes/limits. Roles are cleaned up on leave, persisted in `channel-policies.json`, and broadcast over SSE.
 - **Membership** — `#general` plus configurable default channels (e.g. `#lobby`) are joined by every agent; other sub-channels are opt-in (`join`/`leave`). Non-members can see the channel list and be @mentioned (the mention is stored) but cannot read/write and are not woken.
 - **Identities** — automatic session identity, claimed persistent handles (+ token), or external token identities. One live session per handle, with forced takeover.
-- **Cross-harness** — the same loopback HTTP API powers a zero-dependency CLI and a stdio MCP server (12 tools), so MCP-capable harnesses can drive channels.
+- **Cross-harness** — the same loopback HTTP API powers a zero-dependency CLI and a stdio MCP server (15 tools), so MCP-capable harnesses can drive channels.
 - **Single-writer safety** — one `hub.lock`, per-channel serial queue, append-only JSONL with crash-tail repair, atomic `rename` for state files, client idempotency keys.
 - **No extra process** — the hub lives inside the running `dsh web` host plugin; the browser panel is a normal DSH client bundle.
 
@@ -58,12 +59,13 @@ Then open the DSH Web GUI: the left navigation gets a **Channels** (频道) pane
 
 - Three columns: channel list (unread, create, categories), message stream (reply quotes, `@` highlight, pins, announcement bar, inline images/files), member list for **the active channel**.
 - Composer: `@` autocomplete, Enter sends / Shift+Enter newline, paperclip / drag & drop / paste for attachments.
+- Channel header ⚙ opens **Channel settings**: admins (appoint/remove), mute-all toggle, per-member mute list, and character/frequency limits. The member list shows `管理员` / `禁言` badges; the channel list shows 🔇 while mute-all is on.
 - Search: per-channel or global; click a result to jump to the message and highlight it.
 - Session row context menu: hide the channel surface for that session, or mute its mentions.
 
-## DSH tools (18)
+## DSH tools (21)
 
-`channel_list` · `channel_history` · `channel_send` · `channel_create` · `channel_members` · `channel_whoami` · `channel_claim` · `channel_login` · `channel_release` · `channel_pin` · `channel_unpin` · `channel_announce` · `channel_pins` · `channel_archive` · `channel_search` · `channel_upload` · `channel_join` · `channel_leave`
+`channel_list` · `channel_history` · `channel_send` · `channel_create` · `channel_members` · `channel_whoami` · `channel_claim` · `channel_login` · `channel_release` · `channel_pin` · `channel_unpin` · `channel_announce` · `channel_pins` · `channel_archive` · `channel_search` · `channel_upload` · `channel_join` · `channel_leave` · `channel_mute` · `channel_unmute` · `channel_set_limits`
 
 Identity: a session automatically gets `@dsh-<session-id-prefix>`; `channel_claim` binds a stable handle (`handle`, optional `force`), `channel_login` restores it in a new session.
 
@@ -82,7 +84,10 @@ Base: `http://127.0.0.1:3080/channels/api` (loopback, same origin as the Web GUI
 | `POST /pin`, `POST /unpin`, `POST /announce`, `GET /pins` | pins & announcements |
 | `POST /upload`, `GET /attachments/<id>` | attachments |
 | `GET /members?channel=` | per-channel member roster |
-| `GET /stream?participant=&token=&afterSeq=` | SSE (live messages, replay, presence) |
+| `POST /channel-admins` | `{channel, handle, admin}` — appoint/remove a channel admin (**human operator only**) |
+| `POST /channel-mute` | `{channel, handle?, all?, muted?}` — mute one agent or all non-admin members |
+| `POST /channel-limits` | `{channel, maxChars?, ratePerMinute?}` — per-message character cap / per-member frequency cap (null resets) |
+| `GET /stream?participant=&token=&afterSeq=` | SSE (live messages, replay, presence, `policy` frames) |
 | `GET /session-prefs`, `POST /session-prefs` | per-session hidden/muted |
 | `POST /claim`, `POST /release`, `POST /participants/remove` | identity & maintenance |
 
@@ -98,6 +103,9 @@ node scripts/channels-cli.mjs join my-project
 node scripts/channels-cli.mjs send my-project --file ./screenshot.png "look at this"
 node scripts/channels-cli.mjs search "build error" --channel my-project
 node scripts/channels-cli.mjs listen my-project
+node scripts/channels-cli.mjs mute my-project @build-bot
+node scripts/channels-cli.mjs unmute my-project --all
+node scripts/channels-cli.mjs limits my-project --max-chars 500 --rate 6
 ```
 
 MCP stdio server (Claude Code / Codex / opencode):
@@ -106,7 +114,7 @@ MCP stdio server (Claude Code / Codex / opencode):
 claude mcp add dsh-channels -- node /absolute/path/to/dsh-channels/scripts/mcp-stdio.mjs
 ```
 
-The MCP surface is 12 tools: `channel_register`, `channel_send`, `channel_search`, `channel_join`, `channel_leave`, `channel_history`, `channel_list`, `channel_members`, `channel_whoami`, `channel_pin`, `channel_unpin`, `channel_announce`. The first tool call lazily registers an external identity (or pass `--handle` after running `register` once).
+The MCP surface is 15 tools: `channel_register`, `channel_send`, `channel_search`, `channel_join`, `channel_leave`, `channel_history`, `channel_list`, `channel_members`, `channel_whoami`, `channel_pin`, `channel_unpin`, `channel_announce`, `channel_mute`, `channel_unmute`, `channel_set_limits`. The first tool call lazily registers an external identity (or pass `--handle` after running `register` once).
 
 ## Configuration
 
@@ -136,7 +144,8 @@ Optional data files:
 - **Presence**: `online` = `lastSeen` within 2 minutes (any participant); `idle` = not fresh but the DSH session is still live, or seen within 30 minutes; otherwise `offline`. Activity comes from heartbeats (Web UI), channel tool calls, and authenticated HTTP actions (throttled server-side).
 - **Wake delivery**: `steer` interjects at the nearest step boundary (idle sessions start a turn); `followup` queues a separate turn. Cold sessions always resume with a queued prompt. Muted/hidden sessions and non-members of the channel are skipped, and their mention still remains in history.
 - **Immutable history**: no edit/recall/delete API. Corrections are new messages; pin/announce/archive are metadata events. Archive keeps full history and can be restored.
-- **Humans are exempt from membership**: the Web operator always sees every channel and can write everywhere; `memberCount` counts explicit (non-human) members only.
+- **Humans are exempt from membership**: the Web operator always sees every channel and can write everywhere; `memberCount` counts explicit (non-human) members only. The human is also exempt from channel mutes and posting limits.
+- **Channel administration**: only the human operator can appoint/remove channel admins. A channel admin (or the human) can mute all non-admin members (`mutedAll`), mute individual agents, and set `maxChars` (1-8192) / `ratePerMinute` (1-600). Muted agents can still read history and be woken; they just cannot send. Admins cannot mute another admin, and leaving a channel drops admin/muted roles.
 - **Single process**: one writer per data directory; a second `dsh web` sharing the same `dataDir` runs read-only.
 
 ## Storage layout

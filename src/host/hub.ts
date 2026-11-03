@@ -17,6 +17,8 @@ import {
   MAX_ATTACHMENTS,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_TOTAL_BYTES,
+  MAX_CHANNEL_RATE_PER_MINUTE,
+  MAX_CHANNEL_TEXT_CHARS,
   SEARCH_LIMIT,
   humanSize,
   isValidChannelId,
@@ -29,6 +31,7 @@ import type {
   Attachment,
   ChannelMessage,
   ChannelMeta,
+  ChannelPolicy,
   ChannelView,
   MembershipResponse,
   Participant,
@@ -50,6 +53,7 @@ import { installCommands } from './commands.js'
 import { SessionPrefsService, normalizePrefsPatch, normalizeSessionId } from './session-prefs.js'
 import type { SessionPrefsPatch } from './session-prefs.js'
 import { MembershipService } from './memberships.js'
+import { ChannelPolicyService } from './policy.js'
 import { join as joinPath } from 'node:path'
 import {
   HostError,
@@ -158,6 +162,16 @@ function normalizeDefaultChannels(value: unknown): string[] {
     out.push(entry)
   }
   return out
+}
+
+/** Parse an optional per-channel posting limit: null/'' resets, numbers are validated. */
+function normalizeLimit(value: unknown, min: number, max: number, name: string): number | null {
+  if (value === null || value === '' || value === undefined) return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new HostError(400, 'invalid_request', `${name} must be an integer between ${min} and ${max}, or null to reset`)
+  }
+  return parsed
 }
 
 /** Validate/dedupe the optional `defaultMembers` handle list. */
@@ -277,6 +291,8 @@ export class ChannelsHub {
   readonly sessionPrefs: SessionPrefsService
   /** Per-participant channel membership (`<dataDir>/channel-memberships.json`). */
   readonly memberships: MembershipService
+  /** Per-channel admins / mutes / posting limits (`<dataDir>/channel-policies.json`). */
+  readonly policy: ChannelPolicyService
 
   readonly lock: HubLockAcquisition
   /** False when another live hub owns the data directory (or config says so). */
@@ -288,6 +304,8 @@ export class ChannelsHub {
   private readonly timers: NodeJS.Timeout[] = []
   /** participantId → last throttled activity touch (ms). */
   private readonly activityTouched = new Map<string, number>()
+  /** `${channel}\0${participantId}` → recent send timestamps for per-channel rate limits. */
+  private readonly channelSendStamps = new Map<string, number[]>()
   /** Handles auto-joined to every (non-archived) channel: config + default-members.json. */
   private readonly defaultMemberHandles: string[]
   /** Unregisters the agent/created|disposed listeners installed by start(). */
@@ -343,6 +361,15 @@ export class ChannelsHub {
     // Migration: introduce general-only membership for participants that
     // predate the membership file; sub-channels are deliberately not seeded.
     this.memberships.seedMissing(this.store.listParticipants())
+
+    this.policy = new ChannelPolicyService({
+      dataDir: config.dataDir,
+      readonly: !this.writer,
+      logger: this.logger,
+    })
+    this.policy.load()
+    this.policy.pruneChannels(new Set(this.store.listChannels().map((meta) => meta.id)))
+    this.policy.pruneParticipants(new Set(this.store.listParticipants().map((participant) => participant.id)))
 
     this.identity = new IdentityService({
       store: this.store,
@@ -615,6 +642,107 @@ export class ChannelsHub {
     )
   }
 
+  /**
+   * Channel-admin policy gate for a normal message / announcement (SPEC §7.10).
+   * The human operator is exempt from mutes and limits; admins are exempt from
+   * `mutedAll` but can still be muted explicitly by the human operator.
+   */
+  private assertCanSend(author: Participant, channel: string, text: string): void {
+    if (author.kind === 'human') return
+    const policy = this.policy.get(channel)
+    if (policy.muted.includes(author.id)) {
+      throw new HostError(403, 'muted', `you are muted in #${channel}; ask a channel admin to unmute you`)
+    }
+    if (policy.mutedAll && !policy.admins.includes(author.id)) {
+      throw new HostError(
+        403,
+        'channel_muted',
+        `#${channel} is muted for all members (全员禁言); only channel admins and the human operator can send`,
+      )
+    }
+    if (policy.maxChars !== null) {
+      const chars = Array.from(text).length
+      if (chars > policy.maxChars) {
+        throw new HostError(
+          400,
+          'text_too_long',
+          `message exceeds the ${policy.maxChars}-character limit of #${channel} (got ${chars})`,
+        )
+      }
+    }
+  }
+
+  /** Per-channel frequency limit (rolling 60s); humans are exempt. */
+  private consumeChannelSendRate(author: Participant, channel: string): void {
+    if (author.kind === 'human') return
+    const limit = this.policy.get(channel).ratePerMinute
+    if (limit === null) return
+    const key = `${channel}\u0000${author.id}`
+    const now = Date.now()
+    const windowStart = now - 60_000
+    const stamps = (this.channelSendStamps.get(key) ?? []).filter((stamp) => stamp > windowStart)
+    if (stamps.length >= limit) {
+      this.channelSendStamps.set(key, stamps)
+      const oldest = stamps[0] ?? now
+      throw new HostError(
+        429,
+        'rate_limited',
+        `#${channel} rate limit exceeded (${limit} messages/minute per member); retry in ${Math.ceil((oldest + 60_000 - now) / 1000)}s`,
+      )
+    }
+    stamps.push(now)
+    this.channelSendStamps.set(key, stamps)
+    if (this.channelSendStamps.size > 2_000) {
+      for (const [entry, values] of this.channelSendStamps) {
+        const last = values[values.length - 1]
+        if (last === undefined || last <= windowStart) this.channelSendStamps.delete(entry)
+      }
+    }
+  }
+
+  /** True when `actor` may manage channel policy (human operator or channel admin). */
+  isChannelAdmin(actor: Participant | null | undefined, channel: string): boolean {
+    if (actor === null || actor === undefined) return false
+    if (actor.kind === 'human') return true
+    return this.policy.get(channel).admins.includes(actor.id)
+  }
+
+  private requireChannelManager(actor: Participant, channel: string): ChannelPolicy {
+    const policy = this.policy.get(channel)
+    if (actor.kind === 'human' || policy.admins.includes(actor.id)) return policy
+    throw new HostError(403, 'forbidden', `only a #${channel} admin or the human operator can manage this channel`)
+  }
+
+  /** Resolve an agent handle that must already be a member of `channel`. */
+  private resolvePolicyTarget(handle: unknown, channel: string): Participant {
+    const value = typeof handle === 'string' ? normalizeHandle(handle) : ''
+    if (value.length === 0 || !isValidHandle(value)) {
+      throw new HostError(400, 'invalid_request', 'handle is required (2-24 chars: a-z 0-9 _ -)')
+    }
+    const target = this.identity.byHandle(value)
+    if (target === undefined) throw new HostError(404, 'not_found', `participant "@${value}" does not exist`)
+    if (target.kind === 'human') throw new HostError(400, 'invalid_request', 'humans cannot be muted or channel admins')
+    if (!this.memberships.isMember(target, channel)) {
+      throw new HostError(400, 'invalid_request', `@${value} is not a member of #${channel}; channel_join first`)
+    }
+    return target
+  }
+
+  /** Broadcast a policy change to every SSE subscriber. */
+  private broadcastPolicy(channel: string): void {
+    const policy = this.policy.get(channel)
+    const handleOf = (id: string): string | undefined => this.store.getParticipant(id)?.handle
+    this.broadcast('policy', {
+      type: 'policy',
+      channel,
+      admins: policy.admins.map(handleOf).filter((handle): handle is string => handle !== undefined),
+      muted: policy.muted.map(handleOf).filter((handle): handle is string => handle !== undefined),
+      mutedAll: policy.mutedAll,
+      maxChars: policy.maxChars,
+      ratePerMinute: policy.ratePerMinute,
+    })
+  }
+
   /** Stored member count for one channel (humans are exempt, not counted). */
   memberCount(channel: string): number {
     return this.memberships.memberCount(channel)
@@ -636,8 +764,55 @@ export class ChannelsHub {
           unread: participant !== undefined && participant !== null ? Math.max(0, lastSeq - read) : 0,
           joined: participant !== undefined && participant !== null ? this.memberships.isMember(participant, meta.id) : false,
           memberCount: this.memberships.memberCount(meta.id),
+          ...this.policyView(meta.id, participant),
         }
       })
+  }
+
+  /** Policy columns for one channel view (handles, mute flags, caller abilities). */
+  private policyView(
+    channel: string,
+    participant?: Participant | null,
+  ): Pick<
+    ChannelView,
+    'admins' | 'muted' | 'mutedAll' | 'maxChars' | 'ratePerMinute' | 'canManage' | 'canAppointAdmins'
+  > {
+    const policy = this.policy.get(channel)
+    const handleOf = (id: string): string | undefined => this.store.getParticipant(id)?.handle
+    const admins = policy.admins.map(handleOf).filter((handle): handle is string => handle !== undefined)
+    const muted = policy.muted.map(handleOf).filter((handle): handle is string => handle !== undefined)
+    const human = participant !== undefined && participant !== null && participant.kind === 'human'
+    const admin = participant !== undefined && participant !== null && policy.admins.includes(participant.id)
+    return {
+      admins,
+      muted,
+      mutedAll: policy.mutedAll,
+      maxChars: policy.maxChars,
+      ratePerMinute: policy.ratePerMinute,
+      canManage: human || admin,
+      canAppointAdmins: human,
+    }
+  }
+
+  /** One channel view (404 when unknown). */
+  channelView(participant: Participant | null, channel: unknown): ChannelView {
+    const channelId = this.requireChannel(channel)
+    const views = this.listChannels(participant)
+    const view = views.find((entry) => entry.id === channelId)
+    if (view === undefined) {
+      // Archived channels are not in the default list; build the view directly.
+      const meta = this.store.getChannel(channelId) as ChannelMeta
+      const lastSeq = this.store.lastSeqOf(channelId)
+      return {
+        ...meta,
+        lastSeq,
+        unread: 0,
+        joined: participant !== null && this.memberships.isMember(participant, channelId),
+        memberCount: this.memberships.memberCount(channelId),
+        ...this.policyView(channelId, participant),
+      }
+    }
+    return view
   }
 
   history(participant: Participant | null, input: HistoryInput): HistoryOutcome {
@@ -680,13 +855,23 @@ export class ChannelsHub {
     if (channel === undefined) return this.identity.members()
     const channelId = this.requireChannel(channel)
     const ids = new Set(this.memberships.membersOf(channelId))
+    const policy = this.policy.get(channelId)
     const out: Participant[] = []
     for (const participantId of ids) {
       const participant = this.store.getParticipant(participantId)
-      if (participant !== undefined) out.push(this.identity.view(participant))
+      if (participant === undefined) continue
+      out.push({
+        ...this.identity.view(participant),
+        ...(policy.admins.includes(participant.id) ? { admin: true } : {}),
+        ...(policy.muted.includes(participant.id) ? { muted: true } : {}),
+      })
     }
     if (caller !== undefined && caller !== null && caller.kind === 'human' && !ids.has(caller.id)) {
-      out.push(this.identity.view(caller))
+      out.push({
+        ...this.identity.view(caller),
+        ...(policy.admins.includes(caller.id) ? { admin: true } : {}),
+        ...(policy.muted.includes(caller.id) ? { muted: true } : {}),
+      })
     }
     out.sort((left, right) => left.handle.localeCompare(right.handle))
     return out
@@ -758,7 +943,10 @@ export class ChannelsHub {
     }
     const id = participantId.trim()
     const removed = await this.identity.remove(id)
-    if (removed) this.memberships.removeParticipant(id)
+    if (removed) {
+      this.memberships.removeParticipant(id)
+      this.policy.removeParticipant(id)
+    }
     return { removed, participantId: id }
   }
 
@@ -778,6 +966,9 @@ export class ChannelsHub {
       return { message: immediate, duplicate: true, wake: this.emptyWake() }
     }
 
+    // Channel admin policy (SPEC §7.10): mutes and per-message character cap.
+    this.assertCanSend(author, channel, text)
+
     const attachments = this.resolveAttachments(author, input.attachments)
     if (text.trim().length === 0 && attachments.length === 0) {
       throw new HostError(400, 'invalid_request', 'text is required unless the message has attachments')
@@ -793,6 +984,7 @@ export class ChannelsHub {
       const duplicate = this.wake.lookupIdempotent(author.id, input.clientMsgId)
       if (duplicate !== undefined) return { message: duplicate, duplicate: true }
 
+      this.consumeChannelSendRate(author, channel)
       this.wake.noteSend(author.id)
       const seq = this.store.nextSeq(channel)
       const message: ChannelMessage = {
@@ -926,11 +1118,107 @@ export class ChannelsHub {
     this.assertWritable()
     const channelId = this.requireChannel(channel)
     this.memberships.leave(participant, channelId)
+    // Leaving drops channel-local roles: no ghost admins/mutes for non-members.
+    this.policy.removeMember(channelId, participant.id)
+    this.broadcastPolicy(channelId)
     return {
       channel: channelId,
       joined: this.memberships.isMember(participant, channelId),
       memberCount: this.memberships.memberCount(channelId),
     }
+  }
+
+  // -- channel administration (SPEC §7.10) ----------------------------------
+
+  /**
+   * Appoint/remove one channel admin. **Human operator only.** The target must
+   * be a non-human member of the channel.
+   *
+   * @returns the updated channel view for `actor`.
+   */
+  setChannelAdmins(
+    actor: Participant,
+    channel: unknown,
+    input: { readonly handle?: unknown; readonly admin?: unknown },
+  ): ChannelView {
+    this.assertWritable()
+    const channelId = this.requireChannel(channel)
+    if (actor.kind !== 'human') {
+      throw new HostError(403, 'forbidden', 'only the human operator can appoint or remove channel admins')
+    }
+    const target = this.resolvePolicyTarget(input.handle, channelId)
+    const policy = this.policy.get(channelId)
+    const add = input.admin !== false
+    const admins = add
+      ? [...new Set([...policy.admins, target.id])]
+      : policy.admins.filter((id) => id !== target.id)
+    this.policy.update(channelId, { admins })
+    this.broadcastPolicy(channelId)
+    return this.channelView(actor, channelId)
+  }
+
+  /**
+   * Mute/unmute every non-admin member (`all: true`) or one member. Allowed for
+   * the human operator and channel admins; admins cannot mute another admin
+   * (only the human can), and humans cannot be muted.
+   *
+   * @returns the updated channel view for `actor`.
+   */
+  setChannelMute(
+    actor: Participant,
+    channel: unknown,
+    input: { readonly handle?: unknown; readonly all?: unknown; readonly muted?: unknown },
+  ): ChannelView {
+    this.assertWritable()
+    const channelId = this.requireChannel(channel)
+    this.requireChannelManager(actor, channelId)
+    const muted = input.muted !== false
+
+    if (input.all === true) {
+      this.policy.update(channelId, { mutedAll: muted })
+      this.broadcastPolicy(channelId)
+      return this.channelView(actor, channelId)
+    }
+
+    const target = this.resolvePolicyTarget(input.handle, channelId)
+    const policy = this.policy.get(channelId)
+    if (policy.admins.includes(target.id) && actor.kind !== 'human') {
+      throw new HostError(403, 'forbidden', 'channel admins cannot mute another channel admin; ask the human operator')
+    }
+    const list = muted
+      ? [...new Set([...policy.muted, target.id])]
+      : policy.muted.filter((id) => id !== target.id)
+    this.policy.update(channelId, { muted: list })
+    this.broadcastPolicy(channelId)
+    return this.channelView(actor, channelId)
+  }
+
+  /**
+   * Set per-channel posting limits. `null` resets a field to the server default.
+   * Allowed for the human operator and channel admins.
+   */
+  setChannelLimits(
+    actor: Participant,
+    channel: unknown,
+    input: { readonly maxChars?: unknown; readonly ratePerMinute?: unknown },
+  ): ChannelView {
+    this.assertWritable()
+    const channelId = this.requireChannel(channel)
+    this.requireChannelManager(actor, channelId)
+    const patch: { maxChars?: number | null; ratePerMinute?: number | null } = {}
+    let touched = false
+    if (input.maxChars !== undefined) {
+      patch.maxChars = normalizeLimit(input.maxChars, 1, MAX_CHANNEL_TEXT_CHARS, 'maxChars')
+      touched = true
+    }
+    if (input.ratePerMinute !== undefined) {
+      patch.ratePerMinute = normalizeLimit(input.ratePerMinute, 1, MAX_CHANNEL_RATE_PER_MINUTE, 'ratePerMinute')
+      touched = true
+    }
+    if (!touched) throw new HostError(400, 'invalid_request', 'maxChars and/or ratePerMinute is required')
+    this.policy.update(channelId, patch)
+    this.broadcastPolicy(channelId)
+    return this.channelView(actor, channelId)
   }
 
   // -- search ---------------------------------------------------------------
@@ -984,6 +1272,8 @@ export class ChannelsHub {
     if (utf8Bytes(text) > this.config.maxTextBytes) {
       throw new HostError(400, 'invalid_request', `message exceeds ${this.config.maxTextBytes} bytes`)
     }
+    this.assertCanSend(author, channel, text)
+    this.consumeChannelSendRate(author, channel)
     this.wake.noteAnnounce(author.id)
     const mentions = resolveMentionHandles(undefined, text)
 

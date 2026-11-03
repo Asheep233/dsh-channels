@@ -191,11 +191,11 @@ function mergeMessages(existing: readonly ChannelMessage[], incoming: readonly C
 
 interface ChannelGroup {
   category: string
-  channels: ChannelMeta[]
+  channels: api.ChannelView[]
 }
 
-function groupChannels(channels: readonly ChannelMeta[]): ChannelGroup[] {
-  const groups = new Map<string, ChannelMeta[]>()
+function groupChannels(channels: readonly api.ChannelView[]): ChannelGroup[] {
+  const groups = new Map<string, api.ChannelView[]>()
   for (const channel of channels) {
     const category = channel.category !== undefined && channel.category.trim() !== '' ? channel.category.trim() : '未分类'
     const bucket = groups.get(category)
@@ -886,13 +886,15 @@ function MemberList(props: MemberListProps): React.ReactElement {
                 key={member.id}
                 type="button"
                 className={cx('dshch-member', member.status === 'offline' && 'is-offline')}
-                title={`@${member.handle} · ${kindLabel(member.kind)}${member.harness !== 'other' ? ` · ${member.harness}` : ''}（点击插入 @提及）`}
+                title={`@${member.handle} · ${kindLabel(member.kind)}${member.harness !== 'other' ? ` · ${member.harness}` : ''}${member.admin === true ? ' · 频道管理员' : ''}${member.muted === true ? ' · 已禁言' : ''}（点击插入 @提及）`}
                 onClick={() => props.onMention(member.handle)}
               >
                 <span className={cx('dshch-status-dot', `is-${member.status}`)} aria-hidden="true" />
                 <span className="dshch-member-main">
                   {member.displayName}
                   {member.handle === props.currentHandle && <span className="dshch-member-handle">（我）</span>}
+                  {member.admin === true && <span className="dshch-member-badge">管理员</span>}
+                  {member.muted === true && <span className="dshch-member-badge is-muted">禁言</span>}
                 </span>
                 {member.status !== 'online' && <span className="dshch-member-seen">{relativeAge(member.lastSeen)}</span>}
                 {member.harness !== 'other' && <span className="dshch-member-tag">{member.harness}</span>}
@@ -1095,6 +1097,227 @@ function RenameForm(props: RenameFormProps): React.ReactElement {
 }
 
 /* ------------------------------------------------------------------ */
+/* 频道管理对话框                                                       */
+/* ------------------------------------------------------------------ */
+
+interface ChannelSettingsProps {
+  channel: api.ChannelView
+  members: readonly Participant[]
+  busy: boolean
+  error: string | null
+  onClose: () => void
+  onToggleAdmin: (handle: string, admin: boolean) => void
+  onMuteAll: (muted: boolean) => void
+  onMuteMember: (handle: string, muted: boolean) => void
+  onSaveLimits: (maxChars: number | null, ratePerMinute: number | null) => void
+}
+
+/**
+ * 频道管理面板：任命管理员（仅人类）、全员禁言、成员禁言、发言限制。
+ * 服务端仍会做权限校验；这里只是操作入口。
+ */
+function ChannelSettingsDialog(props: ChannelSettingsProps): React.ReactElement {
+  const [maxChars, setMaxChars] = React.useState<string>(
+    props.channel.maxChars === null || props.channel.maxChars === undefined ? '' : String(props.channel.maxChars),
+  )
+  const [ratePerMinute, setRatePerMinute] = React.useState<string>(
+    props.channel.ratePerMinute === null || props.channel.ratePerMinute === undefined
+      ? ''
+      : String(props.channel.ratePerMinute),
+  )
+  const [adminCandidate, setAdminCandidate] = React.useState('')
+  const [localError, setLocalError] = React.useState<string | null>(null)
+
+  const admins = props.channel.admins ?? []
+  const muted = props.channel.muted ?? []
+  const agents = props.members.filter((member) => member.kind !== 'human')
+  const candidates = agents.filter((member) => !admins.includes(member.handle))
+
+  const submitLimits = (event: React.FormEvent): void => {
+    event.preventDefault()
+    const parse = (raw: string, min: number, max: number, label: string): number | null | undefined => {
+      const text = raw.trim()
+      if (text === '') return null
+      const parsed = Number(text)
+      if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+        setLocalError(`${label}需为 ${min}-${max} 的整数，留空恢复默认`)
+        return undefined
+      }
+      return parsed
+    }
+    const nextMax = parse(maxChars, 1, 8192, '单条字数上限')
+    if (nextMax === undefined) return
+    const nextRate = parse(ratePerMinute, 1, 600, '每分钟条数')
+    if (nextRate === undefined) return
+    setLocalError(null)
+    props.onSaveLimits(nextMax, nextRate)
+  }
+
+  return (
+    <>
+      <div className="dshch-settings-backdrop" onClick={props.onClose} aria-hidden="true" />
+      <div className="dshch-settings" role="dialog" aria-label="频道管理">
+        <div className="dshch-settings-head">
+          <span>⚙ 频道管理 · #{props.channel.name}</span>
+          <button type="button" className="dshch-icon-btn" title="关闭" aria-label="关闭频道管理" onClick={props.onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="dshch-settings-body">
+          <section className="dshch-settings-section">
+            <h4>管理员</h4>
+            <div className="dshch-settings-hint">
+              只有人类操作者可以任命/撤销子频道管理员。管理员可以全员禁言、禁言指定成员、设置发言限制。
+            </div>
+            {admins.length === 0 ? (
+              <div className="dshch-settings-empty">还没有管理员</div>
+            ) : (
+              admins.map((handle) => (
+                <div className="dshch-settings-row" key={handle}>
+                  <code>@{handle}</code>
+                  {props.channel.canAppointAdmins === true && (
+                    <button
+                      type="button"
+                      className="dshch-link-btn"
+                      disabled={props.busy}
+                      onClick={() => props.onToggleAdmin(handle, false)}
+                    >
+                      撤销管理员
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
+            {props.channel.canAppointAdmins === true && (
+              <div className="dshch-settings-row">
+                <select
+                  className="dshch-settings-select"
+                  value={adminCandidate}
+                  aria-label="选择频道成员"
+                  onChange={(event) => setAdminCandidate(event.currentTarget.value)}
+                >
+                  <option value="">选择频道成员…</option>
+                  {candidates.map((member) => (
+                    <option key={member.id} value={member.handle}>
+                      @{member.handle}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="dshch-btn dshch-btn-outline"
+                  disabled={props.busy || adminCandidate === ''}
+                  onClick={() => {
+                    if (adminCandidate === '') return
+                    props.onToggleAdmin(adminCandidate, true)
+                    setAdminCandidate('')
+                  }}
+                >
+                  设为管理员
+                </button>
+              </div>
+            )}
+          </section>
+
+          <section className="dshch-settings-section">
+            <h4>全员禁言</h4>
+            <div className="dshch-settings-row">
+              <button
+                type="button"
+                className={cx('dshch-btn', props.channel.mutedAll === true ? 'dshch-btn-primary' : 'dshch-btn-outline')}
+                disabled={props.busy || props.channel.canManage !== true}
+                onClick={() => props.onMuteAll(props.channel.mutedAll !== true)}
+              >
+                {props.channel.mutedAll === true ? '解除全员禁言' : '开启全员禁言'}
+              </button>
+              <span className="dshch-settings-hint">
+                开启后只有管理员和人类操作者能发言；agent 仍可读历史、仍会被 @ 唤醒。
+              </span>
+            </div>
+          </section>
+
+          <section className="dshch-settings-section">
+            <h4>成员禁言</h4>
+            {agents.length === 0 ? (
+              <div className="dshch-settings-empty">这个频道还没有 agent 成员</div>
+            ) : (
+              agents.map((member) => {
+                const isMuted = muted.includes(member.handle)
+                const isAdmin = admins.includes(member.handle)
+                return (
+                  <div className="dshch-settings-row" key={member.id}>
+                    <span>
+                      @{member.handle}
+                      {isAdmin && <em className="dshch-settings-tag">管理员</em>}
+                    </span>
+                    <button
+                      type="button"
+                      className="dshch-link-btn"
+                      disabled={props.busy || props.channel.canManage !== true}
+                      onClick={() => props.onMuteMember(member.handle, !isMuted)}
+                    >
+                      {isMuted ? '解除禁言' : '禁言'}
+                    </button>
+                  </div>
+                )
+              })
+            )}
+          </section>
+
+          <form className="dshch-settings-section" onSubmit={submitLimits}>
+            <h4>发言限制</h4>
+            <div className="dshch-settings-row">
+              <label className="dshch-settings-field">
+                单条字数上限
+                <input
+                  className="dshch-settings-input"
+                  inputMode="numeric"
+                  value={maxChars}
+                  placeholder="默认"
+                  onChange={(event) => setMaxChars(event.currentTarget.value)}
+                />
+              </label>
+              <label className="dshch-settings-field">
+                每分钟条数
+                <input
+                  className="dshch-settings-input"
+                  inputMode="numeric"
+                  value={ratePerMinute}
+                  placeholder="默认"
+                  onChange={(event) => setRatePerMinute(event.currentTarget.value)}
+                />
+              </label>
+            </div>
+            <div className="dshch-settings-row">
+              <button type="submit" className="dshch-btn dshch-btn-primary" disabled={props.busy || props.channel.canManage !== true}>
+                {props.busy ? '保存中…' : '保存限制'}
+              </button>
+              <button
+                type="button"
+                className="dshch-link-btn"
+                disabled={props.busy || props.channel.canManage !== true}
+                onClick={() => {
+                  setMaxChars('')
+                  setRatePerMinute('')
+                  props.onSaveLimits(null, null)
+                }}
+              >
+                恢复默认
+              </button>
+            </div>
+            <div className="dshch-settings-hint">
+              范围：字数 1-8192，频率 1-600 条/分钟；留空恢复默认。人类操作者不受限制。
+            </div>
+          </form>
+
+          {(localError ?? props.error) !== null && <div className="dshch-form-error">{localError ?? props.error}</div>}
+        </div>
+      </div>
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /* 主面板                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1135,6 +1358,10 @@ export function ChannelsPanel(): React.ReactElement {
   const [renameOpen, setRenameOpen] = React.useState(false)
   const [renaming, setRenaming] = React.useState(false)
   const [renameError, setRenameError] = React.useState<string | null>(null)
+  /* --- 频道管理（管理员 / 禁言 / 发言限制） --- */
+  const [settingsOpen, setSettingsOpen] = React.useState(false)
+  const [settingsBusy, setSettingsBusy] = React.useState(false)
+  const [settingsError, setSettingsError] = React.useState<string | null>(null)
   /* --- M3：附件 --- */
   const [drafts, setDrafts] = React.useState<DraftAttachment[]>([])
   const [draftsError, setDraftsError] = React.useState<string | null>(null)
@@ -1205,6 +1432,8 @@ export function ChannelsPanel(): React.ReactElement {
     draftsRef.current = []
     setDrafts([])
     setDraftsError(null)
+    setSettingsOpen(false)
+    setSettingsError(null)
   }, [activeChannel])
 
   /* ---------- 稳定的小工具 ---------- */
@@ -1293,7 +1522,15 @@ export function ChannelsPanel(): React.ReactElement {
       const index = previous.findIndex((member) => member.id === participant.id)
       if (index < 0) return [...previous, participant]
       const next = [...previous]
-      next[index] = participant
+      const current = previous[index]
+      // Presence frames do not carry channel-local flags; keep the admin/muted
+      // badges learned from GET /members or a policy frame.
+      next[index] = {
+        ...current,
+        ...participant,
+        admin: participant.admin ?? current.admin,
+        muted: participant.muted ?? current.muted,
+      }
       return next
     })
   }, [])
@@ -1307,6 +1544,76 @@ export function ChannelsPanel(): React.ReactElement {
       return next
     })
   }, [])
+
+  /** 把频道管理 API / SSE 返回的策略合并进频道列表与成员标记。 */
+  const applyChannelPolicyView = React.useCallback((view: api.ChannelView) => {
+    setChannels((previous) =>
+      previous.map((channel) => (channel.id === view.id ? { ...channel, ...view } : channel)),
+    )
+    if (view.id === activeChannelRef.current) {
+      const admins = new Set(view.admins ?? [])
+      const muted = new Set(view.muted ?? [])
+      setMembers((previous) =>
+        previous.map((member) => ({
+          ...member,
+          admin: admins.has(member.handle),
+          muted: muted.has(member.handle),
+        })),
+      )
+    }
+  }, [])
+
+  const runChannelSettingsAction = React.useCallback(
+    async (action: () => Promise<api.ApiResult<api.ChannelView>>): Promise<void> => {
+      setSettingsBusy(true)
+      setSettingsError(null)
+      const result = await action()
+      setSettingsBusy(false)
+      if (!result.ok) {
+        if (result.status === 0) setOffline(true)
+        setSettingsError(result.message)
+        return
+      }
+      applyChannelPolicyView(result.value)
+    },
+    [applyChannelPolicyView],
+  )
+
+  const toggleChannelAdmin = React.useCallback(
+    (handle: string, admin: boolean): void => {
+      void runChannelSettingsAction(() =>
+        api.setChannelAdmin(activeChannelRef.current, handle, admin, identityRef.current?.token),
+      )
+    },
+    [runChannelSettingsAction],
+  )
+
+  const setChannelMutedAll = React.useCallback(
+    (muted: boolean): void => {
+      void runChannelSettingsAction(() =>
+        api.setChannelMute(activeChannelRef.current, { all: true, muted }, identityRef.current?.token),
+      )
+    },
+    [runChannelSettingsAction],
+  )
+
+  const setChannelMemberMuted = React.useCallback(
+    (handle: string, muted: boolean): void => {
+      void runChannelSettingsAction(() =>
+        api.setChannelMute(activeChannelRef.current, { handle, muted }, identityRef.current?.token),
+      )
+    },
+    [runChannelSettingsAction],
+  )
+
+  const saveChannelLimits = React.useCallback(
+    (maxChars: number | null, ratePerMinute: number | null): void => {
+      void runChannelSettingsAction(() =>
+        api.setChannelLimits(activeChannelRef.current, { maxChars, ratePerMinute }, identityRef.current?.token),
+      )
+    },
+    [runChannelSettingsAction],
+  )
 
   /* ---------- 身份 ---------- */
   const bootstrapIdentity = React.useCallback(async (): Promise<void> => {
@@ -1639,6 +1946,35 @@ export function ChannelsPanel(): React.ReactElement {
         upsertMember(frame.participant)
         return
       }
+      if (frame.kind === 'policy') {
+        const policy = frame.policy
+        setChannels((previous) =>
+          previous.map((channel) =>
+            channel.id === policy.channel
+              ? {
+                  ...channel,
+                  admins: policy.admins,
+                  muted: policy.muted,
+                  mutedAll: policy.mutedAll,
+                  maxChars: policy.maxChars,
+                  ratePerMinute: policy.ratePerMinute,
+                }
+              : channel,
+          ),
+        )
+        if (policy.channel === activeChannelRef.current) {
+          const admins = new Set(policy.admins)
+          const muted = new Set(policy.muted)
+          setMembers((previous) =>
+            previous.map((member) => ({
+              ...member,
+              admin: admins.has(member.handle),
+              muted: muted.has(member.handle),
+            })),
+          )
+        }
+        return
+      }
       const message = frame.message
       const channel = message.channel
       const entry = storeRef.current[channel]
@@ -1746,7 +2082,7 @@ export function ChannelsPanel(): React.ReactElement {
       // 注意：'message' 既是 host 的命名事件、也是 EventSource 的默认事件类型。
       // addEventListener('message') 已经覆盖两种写法，绝不能再挂 onmessage，
       // 否则同一帧会被处理两次（消息去重了，但未读数会翻倍）。
-      for (const eventName of ['hello', 'message', 'channel', 'presence'] as const) {
+      for (const eventName of ['hello', 'message', 'channel', 'presence', 'policy'] as const) {
         nextSource.addEventListener(eventName, (event) => {
           const data = (event as MessageEvent).data
           if (typeof data === 'string') handleData(data)
@@ -2422,6 +2758,11 @@ export function ChannelsPanel(): React.ReactElement {
                   >
                     <span className="dshch-hash">#</span>
                     <span className="dshch-channel-name">{channel.name}</span>
+                    {channel.mutedAll === true && (
+                      <span className="dshch-channel-mute" title="全员禁言中" aria-label="全员禁言中">
+                        🔇
+                      </span>
+                    )}
                     {count > 0 && <span className="dshch-badge">{count > 99 ? '99+' : count}</span>}
                   </button>
                 )
@@ -2575,6 +2916,20 @@ export function ChannelsPanel(): React.ReactElement {
             >
               📌{pinCount > 0 ? ` ${pinCount}` : ''}
             </button>
+            {activeMeta !== undefined && activeMeta.canManage === true && (
+              <button
+                type="button"
+                className="dshch-icon-btn"
+                title="频道管理（管理员 / 禁言 / 发言限制）"
+                aria-label="频道管理"
+                onClick={() => {
+                  setSettingsError(null)
+                  setSettingsOpen(true)
+                }}
+              >
+                ⚙️
+              </button>
+            )}
             <button
               type="button"
               className={cx('dshch-icon-btn', showMembers && 'is-active')}
@@ -2783,6 +3138,21 @@ export function ChannelsPanel(): React.ReactElement {
           </button>
         )}
 
+        {activeMeta?.mutedAll === true && (
+          <div className="dshch-mute-banner" role="status">
+            🔇 全员禁言进行中：只有频道管理员和人类操作者可以发言
+            {activeMeta.canManage === true && (
+              <button
+                type="button"
+                className="dshch-link-btn"
+                onClick={() => setSettingsOpen(true)}
+              >
+                管理
+              </button>
+            )}
+          </div>
+        )}
+
         <Composer
           key={activeChannel}
           ref={composerRef}
@@ -2833,6 +3203,24 @@ export function ChannelsPanel(): React.ReactElement {
           currentHandle={identity?.handle ?? ''}
           onMention={mentionFromMember}
           onRefresh={() => void refreshMembers()}
+        />
+      )}
+
+      {settingsOpen && activeMeta !== undefined && (
+        <ChannelSettingsDialog
+          key={activeMeta.id}
+          channel={activeMeta}
+          members={members}
+          busy={settingsBusy}
+          error={settingsError}
+          onClose={() => {
+            setSettingsOpen(false)
+            setSettingsError(null)
+          }}
+          onToggleAdmin={toggleChannelAdmin}
+          onMuteAll={setChannelMutedAll}
+          onMuteMember={setChannelMemberMuted}
+          onSaveLimits={saveChannelLimits}
         />
       )}
 

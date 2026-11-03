@@ -48,6 +48,14 @@ export interface ApiInit {
 export interface ChannelView extends ChannelMeta {
   readonly lastSeq?: number
   readonly unread?: number
+  readonly memberCount?: number
+  readonly admins?: readonly string[]
+  readonly muted?: readonly string[]
+  readonly mutedAll?: boolean
+  readonly maxChars?: number | null
+  readonly ratePerMinute?: number | null
+  readonly canManage?: boolean
+  readonly canAppointAdmins?: boolean
 }
 
 /** localStorage 里的浏览器身份（SPEC §8：{participantId, token, handle}）。 */
@@ -212,7 +220,18 @@ export function normalizeParticipant(value: unknown): Participant | null {
     status: asStatus(value.status, lastSeen),
     tokenHash: typeof value.tokenHash === 'string' ? value.tokenHash : undefined,
     binding,
+    ...(value.admin === true ? { admin: true } : {}),
+    ...(value.muted === true ? { muted: true } : {}),
   }
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string')
+}
+
+function nullableInt(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.round(value)) : null
 }
 
 export function normalizeChannel(value: unknown): ChannelMeta | null {
@@ -243,12 +262,23 @@ export function toChannelViews(value: unknown): ChannelView[] {
   for (const item of firstArray(value, ['channels', 'items', 'data'])) {
     const channel = normalizeChannel(item)
     if (channel === null) continue
-    const lastSeq = isRecord(item) && typeof item.lastSeq === 'number' && Number.isFinite(item.lastSeq) ? item.lastSeq : undefined
+    const record = isRecord(item) ? item : {}
+    const lastSeq = typeof record.lastSeq === 'number' && Number.isFinite(record.lastSeq) ? record.lastSeq : undefined
     const unread =
-      isRecord(item) && typeof item.unread === 'number' && Number.isFinite(item.unread)
-        ? Math.max(0, Math.floor(item.unread))
-        : undefined
-    out.push({ ...channel, lastSeq, unread })
+      typeof record.unread === 'number' && Number.isFinite(record.unread) ? Math.max(0, Math.floor(record.unread)) : undefined
+    out.push({
+      ...channel,
+      lastSeq,
+      unread,
+      ...(typeof record.memberCount === 'number' ? { memberCount: Math.max(0, Math.floor(record.memberCount)) } : {}),
+      admins: stringArray(record.admins),
+      muted: stringArray(record.muted),
+      mutedAll: record.mutedAll === true,
+      maxChars: nullableInt(record.maxChars),
+      ratePerMinute: nullableInt(record.ratePerMinute),
+      canManage: record.canManage === true,
+      canAppointAdmins: record.canAppointAdmins === true,
+    })
   }
   return out
 }
@@ -338,11 +368,21 @@ function toWhoAmI(value: unknown): WhoAmIResponse {
 /* SSE 帧（契约 StreamFrame，另外兼容 SPEC 里「裸 payload」的写法）      */
 /* ------------------------------------------------------------------ */
 
+export interface PolicyFrameData {
+  channel: string
+  admins: readonly string[]
+  muted: readonly string[]
+  mutedAll: boolean
+  maxChars: number | null
+  ratePerMinute: number | null
+}
+
 export type IncomingFrame =
   | { kind: 'hello'; channels: ChannelView[]; participant: Participant | null }
   | { kind: 'message'; message: ChannelMessage }
   | { kind: 'channel'; channel: ChannelMeta }
   | { kind: 'presence'; participant: Participant }
+  | { kind: 'policy'; policy: PolicyFrameData }
 
 /**
  * 解析一帧 SSE data（可能是 `{type:'message', message}`，也可能按 SPEC
@@ -378,6 +418,21 @@ export function parseStreamFrame(data: string): IncomingFrame | null {
   if (type === 'presence') {
     const participant = normalizeParticipant(value.participant ?? value)
     return participant === null ? null : { kind: 'presence', participant }
+  }
+  if (type === 'policy') {
+    const channel = str(value.channel)
+    if (channel === '') return null
+    return {
+      kind: 'policy',
+      policy: {
+        channel,
+        admins: stringArray(value.admins),
+        muted: stringArray(value.muted),
+        mutedAll: value.mutedAll === true,
+        maxChars: nullableInt(value.maxChars),
+        ratePerMinute: nullableInt(value.ratePerMinute),
+      },
+    }
   }
   // 没有 type：按形状猜。
   if (value.message !== undefined) {
@@ -485,6 +540,72 @@ export async function fetchMembers(channel: string, token?: string): Promise<Api
   const params = new URLSearchParams({ channel })
   const result = await apiFetch<unknown>(`/members?${params.toString()}`, { token })
   return result.ok ? { ok: true, value: toMembers(result.value) } : result
+}
+
+function toChannelFromResponse(value: unknown): ChannelView | null {
+  const item = isRecord(value) && value.channel !== undefined ? value.channel : value
+  const views = toChannelViews([item])
+  return views[0] ?? null
+}
+
+/** POST /channel-admins (human operator only). */
+export async function setChannelAdmin(
+  channel: string,
+  handle: string,
+  admin: boolean,
+  token?: string,
+): Promise<ApiResult<ChannelView>> {
+  const result = await apiFetch<unknown>('/channel-admins', {
+    method: 'POST',
+    token,
+    body: { channel, handle, admin },
+  })
+  if (!result.ok) return result
+  const view = toChannelFromResponse(result.value)
+  return view === null ? failure(200, 'bad_response', '响应缺少频道信息') : { ok: true, value: view }
+}
+
+export interface ChannelMuteInput {
+  handle?: string
+  all?: boolean
+  muted: boolean
+}
+
+/** POST /channel-mute (human operator or channel admin). */
+export async function setChannelMute(
+  channel: string,
+  input: ChannelMuteInput,
+  token?: string,
+): Promise<ApiResult<ChannelView>> {
+  const result = await apiFetch<unknown>('/channel-mute', {
+    method: 'POST',
+    token,
+    body: { channel, ...input },
+  })
+  if (!result.ok) return result
+  const view = toChannelFromResponse(result.value)
+  return view === null ? failure(200, 'bad_response', '响应缺少频道信息') : { ok: true, value: view }
+}
+
+export interface ChannelLimitsInput {
+  maxChars?: number | null
+  ratePerMinute?: number | null
+}
+
+/** POST /channel-limits (human operator or channel admin); null resets a field. */
+export async function setChannelLimits(
+  channel: string,
+  input: ChannelLimitsInput,
+  token?: string,
+): Promise<ApiResult<ChannelView>> {
+  const result = await apiFetch<unknown>('/channel-limits', {
+    method: 'POST',
+    token,
+    body: { channel, ...input },
+  })
+  if (!result.ok) return result
+  const view = toChannelFromResponse(result.value)
+  return view === null ? failure(200, 'bad_response', '响应缺少频道信息') : { ok: true, value: view }
 }
 
 export async function fetchPins(channel: string, token?: string): Promise<ApiResult<PinWire[]>> {

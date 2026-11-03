@@ -10,7 +10,8 @@
  *   - initialize / notifications/initialized / ping / tools/list / tools/call
  *   - tools: channel_register, channel_send, channel_search, channel_history,
  *     channel_join, channel_leave, channel_list, channel_members, channel_whoami,
- *     channel_pin, channel_unpin, channel_announce
+ *     channel_pin, channel_unpin, channel_announce,
+ *     channel_mute, channel_unmute, channel_set_limits
  *   - channel_send accepts `files` (local paths): each is uploaded to POST /upload
  *     first and then referenced by id from POST /send (M3)
  *   - unknown methods -> JSON-RPC error -32601
@@ -763,6 +764,37 @@ async function toolJoin(args, { leave = false } = {}) {
   )
 }
 
+async function toolMute(args, { muted }) {
+  const channel = normalizeChannel(requireString(args, 'channel'))
+  const body = { channel, muted }
+  if (args.all !== undefined) {
+    if (typeof args.all !== 'boolean') throw new ToolInputError('"all" must be a boolean')
+    body.all = args.all
+  }
+  if (args.handle !== undefined) body.handle = String(args.handle)
+  if (body.all !== true && body.handle === undefined) {
+    throw new ToolInputError('channel_mute/channel_unmute needs "handle" (or "all": true)')
+  }
+  return withAuth((credentials) => httpJson('POST', '/channel-mute', { token: credentials.token, body }))
+}
+
+async function toolSetLimits(args) {
+  const channel = normalizeChannel(requireString(args, 'channel'))
+  const body = { channel }
+  if (args.maxChars !== undefined) {
+    const value = optionalInt(args, 'maxChars', { min: 0, max: 8192 })
+    body.maxChars = value === 0 || value === undefined ? null : value
+  }
+  if (args.ratePerMinute !== undefined) {
+    const value = optionalInt(args, 'ratePerMinute', { min: 0, max: 600 })
+    body.ratePerMinute = value === 0 || value === undefined ? null : value
+  }
+  if (body.maxChars === undefined && body.ratePerMinute === undefined) {
+    throw new ToolInputError('channel_set_limits needs "maxChars" and/or "ratePerMinute"')
+  }
+  return withAuth((credentials) => httpJson('POST', '/channel-limits', { token: credentials.token, body }))
+}
+
 async function toolHistory(args) {
   const channel = normalizeChannel(requireString(args, 'channel'))
   const query = {
@@ -895,6 +927,44 @@ const TOOLS = [
     inputSchema: objectSchema({ channel: channelProperty }, ['channel']),
   },
   {
+    name: 'channel_mute',
+    description:
+      'Mute a channel member (handle) or every non-admin member (all:true) via POST /channel-mute. Only the human operator and channel admins may do this; admins cannot mute another admin. Muting only blocks sending — the target can still read history and be woken by @mentions. Returns the updated channel policy.',
+    inputSchema: objectSchema(
+      {
+        channel: channelProperty,
+        handle: { type: 'string', description: 'Agent handle to mute (required unless all:true).' },
+        all: { type: 'boolean', description: 'true = mute all non-admin members (全员禁言).' },
+      },
+      ['channel'],
+    ),
+  },
+  {
+    name: 'channel_unmute',
+    description: 'Lift a member mute or the all-members mute (全员禁言) via POST /channel-mute with muted:false. Only the human operator and channel admins may do this. Returns the updated channel policy.',
+    inputSchema: objectSchema(
+      {
+        channel: channelProperty,
+        handle: { type: 'string', description: 'Agent handle to unmute (required unless all:true).' },
+        all: { type: 'boolean', description: 'true = lift the all-members mute.' },
+      },
+      ['channel'],
+    ),
+  },
+  {
+    name: 'channel_set_limits',
+    description:
+      'Set per-channel posting limits via POST /channel-limits (human operator or channel admins): maxChars = per-message character cap (1-8192), ratePerMinute = per-member messages per rolling minute (1-600). Pass 0 to reset a field to the server default. Only agents are limited; the human operator is exempt.',
+    inputSchema: objectSchema(
+      {
+        channel: channelProperty,
+        maxChars: { type: 'integer', description: 'Max characters per message (1-8192); 0 resets to default.' },
+        ratePerMinute: { type: 'integer', description: 'Max messages per member per minute (1-600); 0 resets to default.' },
+      },
+      ['channel'],
+    ),
+  },
+  {
     name: 'channel_history',
     description:
       'Read message history for a channel, oldest first. Use beforeSeq to page backwards (hasMore indicates older messages exist). Sub-channels require membership — call channel_join first if you get a not_member error.',
@@ -957,6 +1027,9 @@ const TOOL_HANDLERS = {
   channel_pin: (args) => toolPin(args, { unpin: false }),
   channel_unpin: (args) => toolPin(args, { unpin: true }),
   channel_announce: (args) => toolAnnounce(args),
+  channel_mute: (args) => toolMute(args, { muted: true }),
+  channel_unmute: (args) => toolMute(args, { muted: false }),
+  channel_set_limits: (args) => toolSetLimits(args),
 }
 
 function toolResult(value, isError) {

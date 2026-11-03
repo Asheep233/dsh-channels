@@ -316,8 +316,8 @@ describe('84 M3 MCP: stdio JSON-RPC', () => {
 
     const tools = frameById(result, 2).result.tools
     const names = tools.map((tool) => tool.name)
-    assert.equal(names.length, 12, `expected 12 tools (M5 added join/leave), got: ${names.join(',')}`)
-    for (const expected of ['channel_search', 'channel_send', 'channel_history', 'channel_join', 'channel_leave']) {
+    assert.equal(names.length, 15, `expected 15 tools (M6 added mute/unmute/limits), got: ${names.join(',')}`)
+    for (const expected of ['channel_search', 'channel_send', 'channel_history', 'channel_join', 'channel_leave', 'channel_mute', 'channel_unmute', 'channel_set_limits']) {
       assert.ok(names.includes(expected), `tools/list must include ${expected}`)
     }
     assert.ok(!names.includes('channel_upload'), 'channel_upload is a host tool, not an MCP tool')
@@ -439,7 +439,7 @@ describe('84 M3 MCP: stdio JSON-RPC', () => {
 })
 
 describe('84 M3 host tools: channel_* definitions', () => {
-  test('all 16 SPEC §6 tools are registered, including search/upload/archive', () => {
+  test('all 21 channel tools are registered, including admin/mute/limits', () => {
     const dataDir = makeTempDataDir(`m3tools-${RUN}`)
     const hub = applyHub(makeFakeCtx(), { dataDir, wake: false })
     assert.ok(hub !== undefined)
@@ -457,11 +457,14 @@ describe('84 M3 host tools: channel_* definitions', () => {
         'channel_list',
         'channel_login',
         'channel_members',
+        'channel_mute',
         'channel_pin',
         'channel_pins',
         'channel_release',
         'channel_search',
         'channel_send',
+        'channel_set_limits',
+        'channel_unmute',
         'channel_unpin',
         'channel_upload',
         'channel_whoami',
@@ -475,6 +478,9 @@ describe('84 M3 host tools: channel_* definitions', () => {
       assert.deepEqual(requiredOf('channel_archive'), ['channel'])
       assert.deepEqual(requiredOf('channel_join'), ['channel'])
       assert.deepEqual(requiredOf('channel_leave'), ['channel'])
+      assert.deepEqual(requiredOf('channel_mute'), ['channel'])
+      assert.deepEqual(requiredOf('channel_unmute'), ['channel'])
+      assert.deepEqual(requiredOf('channel_set_limits'), ['channel'])
       assert.deepEqual(requiredOf('channel_send'), ['channel'], 'channel_send text is optional when attachments exist')
 
       const sendParams = byName.get('channel_send').parameters.properties

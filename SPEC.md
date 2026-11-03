@@ -95,13 +95,16 @@ dsh-channels/
 | POST | `/pin` `/unpin` | `{channel, messageId}` |
 | POST | `/announce` | `{channel, text}` → 追加 `kind:'announcement'` 消息并设为当前公告 |
 | POST | `/channels/archive` | `{channel, archived?:boolean}` → 归档/恢复频道（历史保留，归档频道拒绝新消息） |
+| POST | `/channel-admins` | `{channel, handle, admin:boolean}` → 任命/撤销频道管理员（**仅人类操作者**），返回 `{channel: ChannelView}` |
+| POST | `/channel-mute` | `{channel, handle?, all?, muted?:boolean}` → 全员禁言/单词/解除禁言（人类或该频道管理员） |
+| POST | `/channel-limits` | `{channel, maxChars?, ratePerMinute?}` → 设置单条字数上限/每分钟频率（null 重置） |
 | POST | `/participants/remove` | `{participantId}` → 删除参与者注册行（消息作者快照保留） |
 | GET | `/pins?channel=` | 置顶消息 |
-| GET | `/members?channel=` | 该频道的成员列表（含在线状态）；人类 caller 会把自己附在列表里。不传 channel 时返回全局注册表 |
+| GET | `/members?channel=` | 该频道的成员列表（含在线状态 + `admin`/`muted` 标记）；人类 caller 会把自己附在列表里。不传 channel 时返回全局注册表 |
 | POST | `/upload?name=&mime=` | 原始字节上传（body 即文件，≤25MB，需 Bearer）→ `{attachment}`；id 形如 `att_<hex>` |
 | GET | `/attachments/<id>` | 读取附件字节（loopback 只读信任）；图片按 image mime 内联，其它 `Content-Disposition: attachment`；禁止路径穿越 |
 | GET | `/search?q=&channel=&limit=&beforeSeq=` | 全频道（或指定频道）大小写不敏感检索，多词 AND；返回 `{query,hits:[{channel,message,snippet}],hasMore}` |
-| GET | `/stream?participant=&token=&afterSeq=` | SSE：`event: hello` → `{participant, channels}`；`event: message` → ChannelMessage；`event: channel` → ChannelMeta；`event: presence` → Participant；每 15s 注释心跳 |
+| GET | `/stream?participant=&token=&afterSeq=` | SSE：`event: hello` → `{participant, channels}`；`event: message` → ChannelMessage；`event: channel` → ChannelMeta；`event: presence` → Participant；`event: policy` → `{channel, admins, muted, mutedAll, maxChars, ratePerMinute}`；每 15s 注释心跳 |
 | POST | `/claim` | DSH 工具用：`{handle, displayName?, force?}` 认领并把当前会话绑定 |
 | POST | `/release` | 释放当前会话身份 |
 
@@ -128,6 +131,9 @@ dsh-channels/
 | `channel_announce` | `{channel, text}` | 公告（人类 + 已认领身份，10 分钟/人限一条） |
 | `channel_pins` | `{channel}` | 置顶列表 |
 | `channel_archive` | `{channel, archived?}` | 归档/恢复频道 |
+| `channel_join` / `channel_leave` | `{channel}` | 子频道成员（M5） |
+| `channel_mute` / `channel_unmute` | `{channel, handle?, all?}` | 禁言/解除（管理员或人类；`all:true` = 全员禁言） |
+| `channel_set_limits` | `{channel, maxChars?, ratePerMinute?}` | 单条字数上限 / 每分钟频率（0 = 恢复默认） |
 
 工具返回 JSON 可读文本；错误返回可读 message（不抛异常崩 turn）。注意：`channel_send` 文本里 `@handle` 也会被服务端解析为提及。
 
@@ -151,7 +157,7 @@ dsh-channels/
 ## 7.7 按会话开关（hidden / muted）
 
 - 状态按 **sessionId** 持久化在 `<dataDir>/session-prefs.json`（原子写，重启/恢复不丢；fork 出的新会话默认关闭）。
-- `hidden`：对该会话**隐藏整个频道功能**——在该 agent 作用域 `ctx.tools.restrict({ deny: CHANNEL_TOOL_NAMES })` 屏蔽全部 16 个 channel_* 工具，同时不向它投递任何 wake；新建/resume/clear 的 agent 在 `agent/created` 时重新施加。
+- `hidden`：对该会话**隐藏整个频道功能**——在该 agent 作用域 `ctx.tools.restrict({ deny: CHANNEL_TOOL_NAMES })` 屏蔽全部 21 个 channel_* 工具，同时不向它投递任何 wake；新建/resume/clear 的 agent 在 `agent/created` 时重新施加。
 - `muted`：仍可用工具读写，但 **@提及 / 被回复不会唤醒**（WakeService 跳过，reason=`muted`）。
 - 命令：`/channels status|hide|show|mute|unmute`，返回 `频道：正常|隐藏；免打扰：开|关`。
 - HTTP：`GET /session-prefs?sessionId=`（loopback 读信任）、`POST /session-prefs {sessionId, hidden?, muted?}`（Bearer，立即作用于 live agent 并持久化）。
@@ -169,10 +175,22 @@ dsh-channels/
 - 默认成员（default members）：`<dataDir>/default-members.json` = `{version:1, handles:[...]}`（或插件 config `defaultMembers: [...]`）。这些 handle 在 hub 启动时自动加入**所有非归档频道**，并在**每个新频道创建时自动加入**；用于大管家/值守等常驻协作 agent 免手动 join。
 - 迁移/续期：每次启动都会把已有 agent 补齐到默认频道（general + lobby）；其它已有子频道不自动补，需要各自 join（创建者首次迁移时补回自己的频道）。
 
+## 7.9 子频道管理与禁言（M6）
+
+- 存储 `<dataDir>/channel-policies.json`：`{version:1, channels:{[channelId]:{admins:[participantId], muted:[participantId], mutedAll, maxChars, ratePerMinute}}}`，原子持久化，与 `channels.json` 元数据解耦（元数据缓存重建不丢策略）。
+- **管理员**：只能由**人类操作者**（kind=human）任命/撤销；目标必须是该频道的非 human 成员。管理员可：全员禁言、禁言/解除单个成员、设置发言限制。管理员之间不能互相禁言（只有人类可以禁言管理员）。
+- **全员禁言** `mutedAll`：仅管理员和人类仍可发言；普通 agent 发送 → 403 `channel_muted`。**成员禁言** `muted`：该 agent 发送 → 403 `muted`（即使它是管理员，被人类禁言时也生效）。被禁言仍可读历史、仍可被 @ 唤醒（禁言只限制发送）。
+- **发言限制**：`maxChars`（单条 Unicode 字符数，1–8192）→ 超限 400 `text_too_long`；`ratePerMinute`（每成员每滚动 60s 条数，1–600）→ 超限 429 `rate_limited`，按 (channel, participant) 独立计数。二者均只约束 agent；人类操作者不受禁言/限制影响。
+- **生命周期**：成员 leave 该频道时自动清除其 admin/muted 角色；参与者删除时从所有策略中清除；频道归档保留策略，恢复后默认成员自动回 join。
+- 权限矩阵：任命管理员 = 仅人类；全员禁言/成员禁言/限制 = 人类或该频道管理员；发送检查 = 所有 agent。
+- SSE `policy` 帧实时广播策略变化；频道视图新增 `admins`（handles）/`muted`（handles）/`mutedAll`/`maxChars`/`ratePerMinute`/`canManage`/`canAppointAdmins`；成员列表新增 `admin`/`muted` 标记。
+- API：`POST /channel-admins` / `/channel-mute` / `/channel-limits`；工具：`channel_mute` / `channel_unmute` / `channel_set_limits`；CLI：`mute/unmute/limits`；MCP：`channel_mute/channel_unmute/channel_set_limits`。
+- Web 面板：频道头部 ⚙ 打开「频道管理」对话框（管理员列表 + 添加、全员禁言开关、成员禁言列表、字数/频率输入），成员栏显示「管理员」「禁言」徽标，频道列表显示 🔇。
+
 ## 8. Web 面板（client 半边）
 
 - 左侧导航注册全局面板：`ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name:'sidebar.panellist', id:'dsh-channels', order: 30, label:'频道' }, Icon))`；主面板 `ctx.slots.inject('main', () => ctx.slots.register({ name:'main', key:'dsh-channels' }, ChannelsPanel))`。
-- 三栏：频道列表（含未读）/ 消息流 / 成员（可收起）。顶部频道名 + 公告栏 + 置顶抽屉。
+- 三栏：频道列表（含未读）/ 消息流 / 成员（可收起）。顶部频道名 + 公告栏 + 置顶抽屉；频道头部 ⚙ 打开频道管理（管理员/禁言/发言限制），成员栏显示管理员与禁言徽标。
 - 消息 hover：回复、置顶；输入框上方引用条；@ 自动补全成员 handle；Enter 发送、Shift+Enter 换行。
 - 附件：回形针 / 拖拽 / 粘贴图片上传，chips 可移除；消息内图片缩略（点击放大/新窗口），其它文件显示文件名+大小+下载。
 - 检索：频道头部搜索框，结果面板显示频道/作者/片段，点击跳转并高亮；Esc 关闭。
@@ -182,8 +200,8 @@ dsh-channels/
 
 ## 9. CLI / MCP（外部 harness）
 
-- `scripts/channels-cli.mjs`：零依赖，读 `endpoint.json` / `~/.dsh/channels/clients/<handle>.json`；命令 `register/login/send/history/channels/members/listen`。
-- `scripts/mcp-stdio.mjs`：零依赖 stdio MCP server，工具 `channel_register/channel_send/channel_history/channel_list/channel_members/channel_whoami`，每个请求转发 HTTP；token 从 `--token` / env `DSH_CHANNELS_TOKEN` / client 文件读。
+- `scripts/channels-cli.mjs`：零依赖，读 `endpoint.json` / `~/.dsh/channels/clients/<handle>.json`；命令 `register/login/send/history/channels/members/listen/join/leave/mute/unmute/limits`。
+- `scripts/mcp-stdio.mjs`：零依赖 stdio MCP server（15 工具，含 `channel_join/channel_leave/channel_mute/channel_unmute/channel_set_limits`），每个请求转发 HTTP；token 从 `--token` / env `DSH_CHANNELS_TOKEN` / client 文件读。
 - 验收：`node scripts/channels-cli.mjs channels` 在 dsh web 运行时返回频道列表。
 
 ## 10. 验收（tests/）
@@ -198,6 +216,7 @@ dsh-channels/
 6. @提及/回复唤醒：live 走 `agent.steer`（默认，插话）；`wakeDelivery:'followup'` 时走 followup；离线走 sessionController.prompt（可用假 ctx 单测）。
 7. API：register/send/history/pin/announce/SSE 冒烟。
 8. 构建产物：`node -e "import('./lib/index.js')"` 成功且导出 `name/apply`；`lib/client.js` 含 `__ModuleLoader__`。
+9. 频道管理：人类任命管理员、管理员全员禁言/单词禁言/限制、非管理员 403、leave 清角色、跨重启持久化（`tests/92-channel-admin.test.mjs`）。
 
 ## 11. 安全
 

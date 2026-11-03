@@ -225,7 +225,7 @@ describe('90 M4/M5 CLI: membership', () => {
 })
 
 describe('90 M4/M5 MCP: channel_join / channel_leave', () => {
-  test('tools/list exposes 12 tools including channel_join/channel_leave', async () => {
+  test('tools/list exposes 15 tools including join/leave/mute/limits', async () => {
     const result = await runMcp(
       [
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } },
@@ -236,10 +236,13 @@ describe('90 M4/M5 MCP: channel_join / channel_leave', () => {
     assert.deepEqual(result.parseErrors, [])
     const tools = frameById(result, 2).result.tools
     const names = tools.map((tool) => tool.name).sort()
-    assert.equal(names.length, 12, names.join(','))
+    assert.equal(names.length, 15, names.join(','))
     assert.ok(names.includes('channel_join'))
     assert.ok(names.includes('channel_leave'))
-    for (const name of ['channel_join', 'channel_leave']) {
+    for (const name of ['channel_mute', 'channel_unmute', 'channel_set_limits']) {
+      assert.ok(names.includes(name), name)
+    }
+    for (const name of ['channel_join', 'channel_leave', 'channel_mute', 'channel_unmute', 'channel_set_limits']) {
       assert.deepEqual(tools.find((tool) => tool.name === name).inputSchema.required, ['channel'])
     }
     assert.ok(names.includes('channel_search'), 'M3 search tool still present')

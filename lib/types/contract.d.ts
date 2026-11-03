@@ -31,7 +31,7 @@ export interface SessionPrefsResponse {
     readonly prefs: SessionPrefs;
 }
 /** Host tools that make up the channel surface (used to mask a hidden session). */
-export declare const CHANNEL_TOOL_NAMES: readonly ["channel_list", "channel_history", "channel_send", "channel_create", "channel_members", "channel_whoami", "channel_claim", "channel_login", "channel_release", "channel_pin", "channel_unpin", "channel_announce", "channel_pins", "channel_archive", "channel_search", "channel_upload", "channel_join", "channel_leave"];
+export declare const CHANNEL_TOOL_NAMES: readonly ["channel_list", "channel_history", "channel_send", "channel_create", "channel_members", "channel_whoami", "channel_claim", "channel_login", "channel_release", "channel_pin", "channel_unpin", "channel_announce", "channel_pins", "channel_archive", "channel_search", "channel_upload", "channel_join", "channel_leave", "channel_mute", "channel_unmute", "channel_set_limits"];
 export type ParticipantKind = 'human' | 'dsh-agent' | 'external';
 export type HarnessName = 'dsh' | 'claude-code' | 'codex' | 'opencode' | 'other';
 export type MessageKind = 'chat' | 'announcement';
@@ -93,14 +93,41 @@ export interface ChannelMeta {
     /** Archived channels stay readable but are hidden from the normal list and reject new messages. */
     readonly archived?: boolean;
 }
-/** Channel metadata plus the caller's view (unread + membership). */
+/**
+ * Per-channel admin policy (SPEC §7.10). `admins` / `muted` are participant ids
+ * in the store; API views map them to handles.
+ */
+export interface ChannelPolicy {
+    readonly admins: readonly string[];
+    readonly muted: readonly string[];
+    readonly mutedAll: boolean;
+    /** Per-message character cap; null = server default. */
+    readonly maxChars: number | null;
+    /** Per-participant messages per rolling minute; null = server default. */
+    readonly ratePerMinute: number | null;
+}
+/** Channel metadata plus the caller's view (unread + membership + policy). */
 export interface ChannelView extends ChannelMeta {
     readonly lastSeq: number;
     readonly unread: number;
     /** True when the caller may read/write this channel (humans always true). */
     readonly joined: boolean;
     readonly memberCount: number;
+    /** Channel admins as handles (only the human operator can appoint them). */
+    readonly admins: readonly string[];
+    /** Explicitly muted members as handles. */
+    readonly muted: readonly string[];
+    readonly mutedAll: boolean;
+    readonly maxChars: number | null;
+    readonly ratePerMinute: number | null;
+    /** True when the caller is the human operator or an admin of this channel. */
+    readonly canManage: boolean;
+    /** True when the caller may appoint/remove admins (human operator only). */
+    readonly canAppointAdmins: boolean;
 }
+/** Bounds accepted by POST /channel-limits and channel_set_limits. */
+export declare const MAX_CHANNEL_TEXT_CHARS = 8192;
+export declare const MAX_CHANNEL_RATE_PER_MINUTE = 600;
 export interface MembershipResponse {
     readonly channel: string;
     readonly joined: boolean;
@@ -118,6 +145,10 @@ export interface Participant {
     /** SHA-256 of the bearer token; never returned by any API. */
     readonly tokenHash?: string;
     readonly binding?: ParticipantBinding;
+    /** Only set on per-channel member lists: this participant is a channel admin. */
+    readonly admin?: boolean;
+    /** Only set on per-channel member lists: this participant is muted here. */
+    readonly muted?: boolean;
 }
 export interface RegisterRequest {
     readonly kind: ParticipantKind;
@@ -187,7 +218,16 @@ export interface PresenceFrame {
     readonly type: 'presence';
     readonly participant: Participant;
 }
-export type StreamFrame = HelloFrame | MessageFrame | ChannelFrame | PresenceFrame;
+export interface PolicyFrame {
+    readonly type: 'policy';
+    readonly channel: string;
+    readonly admins: readonly string[];
+    readonly muted: readonly string[];
+    readonly mutedAll: boolean;
+    readonly maxChars: number | null;
+    readonly ratePerMinute: number | null;
+}
+export type StreamFrame = HelloFrame | MessageFrame | ChannelFrame | PresenceFrame | PolicyFrame;
 export declare const RESERVED_HANDLES: ReadonlySet<string>;
 /** True when the value is a legal channel id (slug). */
 export declare function isValidChannelId(value: unknown): value is string;

@@ -29,7 +29,7 @@ import { homedir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import process from 'node:process'
 
-const VERSION = '0.1.0'
+const VERSION = '0.3.0'
 const MAX_TEXT_BYTES = 8 * 1024
 const MAX_PAGE = 100
 // Mirrors src/contract.ts (M3 attachments + search).
@@ -1280,7 +1280,84 @@ async function cmdListen(argv, pre) {
 // help / dispatch / main
 // ---------------------------------------------------------------------------
 
+async function cmdMute(argv, pre) {
+  const { positionals, flags } = parseArgs(argv)
+  if (flagOn(flags, '--help')) return printHelp(currentCommand)
+  const all = flagOn(flags, '--all')
+  if (positionals.length < 1) throw new UsageError(`usage: ${currentCommand} <channel> <handle>${all ? '' : ' [--all]'}`)
+  if (!all && positionals.length < 2) throw new UsageError(`usage: ${currentCommand} <channel> <handle> (or add --all)`)
+  if (positionals.length > 2) throw new UsageError(`unexpected argument "${positionals[2]}"`)
+  const channel = normalizeChannel(positionals[0])
+  const body = { channel, muted: currentCommand === 'mute' }
+  if (all) body.all = true
+  else body.handle = positionals[1]
+  const base = resolveBaseUrl(flagValue(flags, '--url') ?? pre.url)
+  const identity = requireIdentity(resolveIdentity({ as: flagValue(flags, '--as') ?? pre.as, token: flagValue(flags, '--token') ?? pre.token }))
+  let data
+  try {
+    data = await requestJson(base, 'POST', '/channel-mute', { token: identity.token, body })
+  } catch (error) {
+    throw channelHint(error, channel)
+  }
+  if (wantsJson(flags, pre)) return outLine(pretty(data))
+  const policy = data?.channel ?? data
+  if (all) await outLine(`${currentCommand === 'mute' ? 'muted all members in' : 'lifted the all-members mute in'} #${channel}`)
+  else await outLine(`${currentCommand === 'mute' ? 'muted' : 'unmuted'} @${body.handle} in #${channel}`)
+  if (policy && typeof policy === 'object' && typeof policy.mutedAll === 'boolean') {
+    await outLine(`  mutedAll=${policy.mutedAll} muted=${JSON.stringify(policy.muted ?? [])}`)
+  }
+}
+
+async function cmdLimits(argv, pre) {
+  const { positionals, flags } = parseArgs(argv)
+  if (flagOn(flags, '--help')) return printHelp('limits')
+  if (positionals.length < 1) throw new UsageError('usage: limits <channel> [--max-chars N] [--rate N]')
+  const channel = normalizeChannel(positionals[0])
+  const body = { channel }
+  const maxChars = flagValue(flags, '--max-chars')
+  const rate = flagValue(flags, '--rate')
+  if (maxChars === undefined && rate === undefined) throw new UsageError('limits needs --max-chars and/or --rate')
+  const parseLimit = (raw, name, min, max) => {
+    const value = Number(raw)
+    if (!Number.isInteger(value) || value < 0 || value > max) throw new UsageError(`${name} must be an integer 0..${max} (0 = reset)`)
+    return value === 0 ? null : value
+  }
+  if (maxChars !== undefined) body.maxChars = parseLimit(maxChars, '--max-chars', 1, 8192)
+  if (rate !== undefined) body.ratePerMinute = parseLimit(rate, '--rate', 1, 600)
+  const base = resolveBaseUrl(flagValue(flags, '--url') ?? pre.url)
+  const identity = requireIdentity(resolveIdentity({ as: flagValue(flags, '--as') ?? pre.as, token: flagValue(flags, '--token') ?? pre.token }))
+  let data
+  try {
+    data = await requestJson(base, 'POST', '/channel-limits', { token: identity.token, body })
+  } catch (error) {
+    throw channelHint(error, channel)
+  }
+  if (wantsJson(flags, pre)) return outLine(pretty(data))
+  const policy = data?.channel ?? data
+  await outLine(`limits for #${channel}: maxChars=${policy?.maxChars ?? 'default'} ratePerMinute=${policy?.ratePerMinute ?? 'default'}`)
+}
+
 const COMMAND_HELP = {
+  mute: {
+    usage: 'mute <channel> <handle> [--all]',
+    summary:
+      'Mute one member (POST /channel-mute) or every non-admin member with --all (全员禁言). Allowed for the human operator and channel admins; admins cannot mute another admin.',
+    options: [['--all', 'mute all non-admin members instead of one handle']],
+  },
+  unmute: {
+    usage: 'unmute <channel> <handle> [--all]',
+    summary: 'Lift a member mute, or the all-members mute with --all.',
+    options: [['--all', 'lift the all-members mute']],
+  },
+  limits: {
+    usage: 'limits <channel> [--max-chars N] [--rate N]',
+    summary:
+      'Set per-channel posting limits (POST /channel-limits). maxChars = per-message character cap (1-8192); rate = per-member messages per rolling minute (1-600). Pass 0 to reset a field.',
+    options: [
+      ['--max-chars N', 'per-message character cap; 0 resets to default'],
+      ['--rate N', 'messages per member per minute; 0 resets to default'],
+    ],
+  },
   channels: {
     usage: 'channels [list]',
     summary:
@@ -1410,6 +1487,9 @@ Commands:
   pin <channel> <messageId>           pin a message
   unpin <channel> <messageId>         unpin a message
   announce <channel> <text...>        post an announcement
+  mute <channel> <handle> [--all]     mute a member (or all non-admin members)
+  unmute <channel> <handle> [--all]   unmute a member / lift 全员禁言
+  limits <channel> [--max-chars N] [--rate N]  set per-channel posting limits (0 resets)
   help [command]                      show help
   version                             print the CLI version
 
@@ -1469,6 +1549,9 @@ const COMMANDS = {
   announce: cmdAnnounce,
   join: cmdJoin,
   leave: cmdJoin,
+  mute: cmdMute,
+  unmute: cmdMute,
+  limits: cmdLimits,
 }
 
 function defaultHint(error) {
