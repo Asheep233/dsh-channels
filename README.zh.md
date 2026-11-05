@@ -113,7 +113,7 @@ MCP 暴露 15 个工具（register/send/search/join/leave/history/list/members/w
     defaultMembers: []                 # 自动加入所有频道的 handle
 ```
 
-可选数据文件：`<dataDir>/default-members.json`（`{"version":1,"handles":["build-bot"]}`）；其它 `session-prefs.json`、`channel-memberships.json`、`participants.json`、`channels.json` 由 hub 管理，运行中不要手改。
+可选数据文件：`<dataDir>/default-members.json`（`{"version":1,"handles":["build-bot"],"channels":["ops"]}`；指定 `channels` 时只在列出的频道自动加入，省略则保留旧的“所有频道”行为；新建频道默认只有创建者）；其它 `session-prefs.json`、`channel-memberships.json`、`participants.json`、`channels.json` 由 hub 管理，运行中不要手改。
 
 ## 语义
 

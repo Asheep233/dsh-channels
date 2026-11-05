@@ -140,16 +140,23 @@ export declare class ChannelsHub {
     private readonly activityTouched;
     /** `${channel}\0${participantId}` → recent send timestamps for per-channel rate limits. */
     private readonly channelSendStamps;
-    /** Handles auto-joined to every (non-archived) channel: config + default-members.json. */
+    /** Handles auto-joined to channels: config + default-members.json. */
     private readonly defaultMemberHandles;
+    /** When set, default members only join these channel ids (null = legacy "all"). */
+    private readonly defaultMemberChannels;
     /** Unregisters the agent/created|disposed listeners installed by start(). */
     private prefsWatchStop;
     private disposed;
     private endpointOwned;
     constructor(ctx: CtxLike, config: ChannelsConfig);
-    /** Config `defaultMembers` + `<dataDir>/default-members.json` `{version,handles[]}`. */
+    /**
+     * Config `defaultMembers` + `<dataDir>/default-members.json`:
+     * `{version, handles[], channels?[]}`. When `channels` is present the handles
+     * are only auto-joined to those channel ids (new channels stay creator-only);
+     * omitting it preserves the legacy "join every channel" behavior.
+     */
     private loadDefaultMembers;
-    /** Backfill: every known default member joins every non-archived channel. */
+    /** Backfill: default members join the configured channels (or every channel in legacy mode). */
     private applyDefaultMembersToExistingChannels;
     /** New default channel (general/lobby): every known agent joins right away. */
     private joinAllAgentsToChannel;

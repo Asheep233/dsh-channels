@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.1 — 2026-11-05
+
+Default-member scoping fix.
+
+- `default-members.json` now accepts an optional `channels` array: those handles are only auto-joined to the listed channels (on startup and when such a channel is created).
+- **New channels are creator-only again** — an agent nobody invited is no longer silently added. Omit `channels` to restore the legacy "join every channel" behavior.
+- Removed the accidental auto-joined default members from existing channels (kept `#general` / `#lobby` per the default-channel rule, plus the explicitly configured `#dsh-butler-opencode`).
+- Tests: 216 tests / 59 suites (new `tests/94-default-members.test.mjs`).
+
 ## v0.3.0 — 2026-11-03
 
 Channel administration and moderation.

@@ -306,8 +306,10 @@ export class ChannelsHub {
   private readonly activityTouched = new Map<string, number>()
   /** `${channel}\0${participantId}` → recent send timestamps for per-channel rate limits. */
   private readonly channelSendStamps = new Map<string, number[]>()
-  /** Handles auto-joined to every (non-archived) channel: config + default-members.json. */
+  /** Handles auto-joined to channels: config + default-members.json. */
   private readonly defaultMemberHandles: string[]
+  /** When set, default members only join these channel ids (null = legacy "all"). */
+  private readonly defaultMemberChannels: string[] | null
   /** Unregisters the agent/created|disposed listeners installed by start(). */
   private prefsWatchStop: (() => void) | undefined
   private disposed = false
@@ -382,7 +384,9 @@ export class ChannelsHub {
     if (this.memberships.wasStorageMissing()) this.seedLegacyCreatorMemberships()
 
     // Auto-join handles: config list + <dataDir>/default-members.json.
-    this.defaultMemberHandles = this.loadDefaultMembers(config)
+    const defaultMembers = this.loadDefaultMembers(config)
+    this.defaultMemberHandles = defaultMembers.handles
+    this.defaultMemberChannels = defaultMembers.channels
     this.applyDefaultMembersToExistingChannels()
     this.wake = new WakeService({
       store: this.store,
@@ -406,32 +410,46 @@ export class ChannelsHub {
 
   // -- default members ------------------------------------------------------
 
-  /** Config `defaultMembers` + `<dataDir>/default-members.json` `{version,handles[]}`. */
-  private loadDefaultMembers(config: ChannelsConfig): string[] {
-    const out: string[] = []
+  /**
+   * Config `defaultMembers` + `<dataDir>/default-members.json`:
+   * `{version, handles[], channels?[]}`. When `channels` is present the handles
+   * are only auto-joined to those channel ids (new channels stay creator-only);
+   * omitting it preserves the legacy "join every channel" behavior.
+   */
+  private loadDefaultMembers(config: ChannelsConfig): { handles: string[]; channels: string[] | null } {
+    const handles: string[] = []
     const add = (value: unknown): void => {
       if (typeof value !== 'string') return
       const handle = normalizeHandle(value)
-      if (!isValidHandle(handle) || out.includes(handle)) return
-      out.push(handle)
+      if (!isValidHandle(handle) || handles.includes(handle)) return
+      handles.push(handle)
     }
+    let channels: string[] | null = null
     for (const handle of config.defaultMembers) add(handle)
     try {
       const raw = readJsonFile<unknown>(joinPath(config.dataDir, 'default-members.json'))
       if (typeof raw === 'object' && raw !== null) {
-        const handles = (raw as { handles?: unknown }).handles
-        if (Array.isArray(handles)) for (const handle of handles) add(handle)
+        const record = raw as { handles?: unknown; channels?: unknown }
+        if (Array.isArray(record.handles)) for (const handle of record.handles) add(handle)
+        if (Array.isArray(record.channels)) {
+          channels = record.channels.filter(
+            (channel): channel is string => typeof channel === 'string' && isValidChannelId(channel),
+          )
+        }
       }
     } catch {
       /* optional file */
     }
-    return out
+    return { handles, channels }
   }
 
-  /** Backfill: every known default member joins every non-archived channel. */
+  /** Backfill: default members join the configured channels (or every channel in legacy mode). */
   private applyDefaultMembersToExistingChannels(): void {
     if (!this.writer || this.defaultMemberHandles.length === 0) return
-    const channels = this.store.listChannels().filter((meta) => meta.archived !== true)
+    const scope = this.defaultMemberChannels
+    const channels = this.store
+      .listChannels()
+      .filter((meta) => meta.archived !== true && (scope === null || scope.includes(meta.id)))
     let added = 0
     for (const handle of this.defaultMemberHandles) {
       const participant = this.identity.byHandle(handle)
@@ -462,6 +480,7 @@ export class ChannelsHub {
 
   private joinDefaultMembersToChannel(channel: string): void {
     if (!this.writer || this.defaultMemberHandles.length === 0) return
+    if (this.defaultMemberChannels !== null && !this.defaultMemberChannels.includes(channel)) return
     for (const handle of this.defaultMemberHandles) {
       const participant = this.identity.byHandle(handle)
       if (participant === undefined || participant.kind === 'human') continue

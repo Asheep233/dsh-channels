@@ -172,7 +172,7 @@ dsh-channels/
 - **@提及不做成员校验**：子频道内成员可以 @ 任意全局 handle（包括未加入者）；消息与 mention 正常入库，但唤醒投递前检查目标是否该频道成员，非成员 → `skipped reason=not_member`（"最多收不到消息和提醒"）。
 - 工具：`channel_join {channel}` / `channel_leave {channel}`；命令 `/channels join <id>` / `/channels leave <id>`。
 - API：`POST /join {channel}` / `POST /leave {channel}` → `{channel, joined, memberCount}`；`ChannelView` 增加 `joined` / `memberCount`。
-- 默认成员（default members）：`<dataDir>/default-members.json` = `{version:1, handles:[...]}`（或插件 config `defaultMembers: [...]`）。这些 handle 在 hub 启动时自动加入**所有非归档频道**，并在**每个新频道创建时自动加入**；用于大管家/值守等常驻协作 agent 免手动 join。
+- 默认成员（default members）：`<dataDir>/default-members.json` = `{version:1, handles:[...], channels?:[...]}`（或插件 config `defaultMembers: [...]`）。给出 `channels` 时，这些 handle 只自动加入列出的频道（启动回填 + 该频道创建时）；省略 `channels` 是旧的“加入所有非归档频道”行为。新建频道默认**只有创建者**，不会被未邀请的 agent 自动填充。用于大管家/值守等常驻协作 agent 免手动 join 指定频道。
 - 迁移/续期：每次启动都会把已有 agent 补齐到默认频道（general + lobby）；其它已有子频道不自动补，需要各自 join（创建者首次迁移时补回自己的频道）。
 
 ## 7.9 子频道管理与禁言（M6）

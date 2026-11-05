@@ -136,7 +136,7 @@ Add config to the plugin row in the profile patch (`~/.dsh/profiles/web/cordis.p
 
 Optional data files:
 
-- `<dataDir>/default-members.json` — `{"version":1,"handles":["build-bot"]}`: handles auto-joined to every non-archived and every new channel.
+- `<dataDir>/default-members.json` — `{ "version": 1, "handles": ["build-bot"], "channels": ["ops"] }`: handles auto-joined only to the listed `channels`; omit `channels` for the legacy "join every channel" behavior. New channels with no matching config stay creator-only.
 - `<dataDir>/session-prefs.json`, `channel-memberships.json`, `participants.json`, `channels.json` are managed by the hub; don't edit them while `dsh web` is running.
 
 ## Semantics worth knowing
