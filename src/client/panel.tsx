@@ -111,9 +111,12 @@ function toDate(ts: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
+/** YYYY-MM-DD HH:MM (local time): channel history spans days, so the date is always visible. */
 function formatClock(ts: string): string {
   const date = toDate(ts)
-  return date === null ? '' : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  if (date === null) return ''
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function formatFull(ts: string): string {

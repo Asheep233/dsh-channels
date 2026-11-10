@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.2 — 2026-11-10
+
+Message timestamps now include the full date.
+
+- Message rows show `YYYY-MM-DD HH:MM` (local time) instead of only `HH:MM`, so cross-day channel history is unambiguous.
+- The day divider and hover tooltip are unchanged (full date/weekday remain available).
+
 ## v0.3.1 — 2026-11-05
 
 Default-member scoping fix.
