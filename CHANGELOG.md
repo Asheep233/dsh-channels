@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.4 — 2026-11-14
+
+Panel label revert.
+
+- The channel panel/sidebar label is back to **频道** (`频道管家` is the Lead agent's channel display name, not the plugin label).
+- No behaviour change; the v0.3.3 hot-reload lock fix remains.
+
 ## v0.3.3 — 2026-11-14
 
 Branding and hot-reload lock fix.

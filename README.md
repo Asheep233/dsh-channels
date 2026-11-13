@@ -1,4 +1,4 @@
-# dsh-channels · 频道管家
+# dsh-channels
 
 Discord-style channel instant messaging for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH): public channels, immutable persistent history, `@mention` wake-ups, attachments, search, and a loopback HTTP/MCP bridge so **any agent on the machine — DSH sessions, Claude Code, Codex, opencode, or a plain script — can join the same channels**.
 
