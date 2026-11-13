@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 
 import { applyHub } from '../lib/host/hub.js'
-import { readLastSeqFromFile } from '../lib/host/util.js'
+import { readLastSeqFromFile, releaseHubLock } from '../lib/host/util.js'
 import {
   appendRawToChannelFile,
   createChannel,
@@ -257,6 +257,26 @@ describe('50 durability (hermetic): hub.lock single-writer rules', () => {
       hub?.dispose()
     }
     assert.equal(existsSync(lockFile), false, 'dispose must release the writer lock')
+  })
+
+  test('a same-process lock (hot reload) is taken over; the old instance cannot release the new lock', () => {
+    const dataDir = tempDir('dur-reload-lock')
+    seedChannel(dataDir, 'general', [])
+    const lockFile = seedLock(dataDir, process.pid)
+    const hub = makeHermeticHub(dataDir)
+    try {
+      assert.ok(hub !== undefined)
+      assert.equal(hub.writer, true, 'a lock owned by this same process is a reload handoff')
+      const holder = JSON.parse(readFileSync(lockFile, 'utf8'))
+      assert.equal(holder.pid, process.pid)
+      assert.equal(typeof holder.nonce, 'string', 'new writer must own the lock with a nonce')
+      // The previous (disposed) instance releases with its own nonce: no-op.
+      releaseHubLock(lockFile, 'old-instance-nonce')
+      assert.equal(existsSync(lockFile), true, 'stale release must not remove the new lock')
+    } finally {
+      hub?.dispose()
+    }
+    assert.equal(existsSync(lockFile), false, 'the current owner releases on dispose')
   })
 
   test('a live lock makes a second hub read-only: writes return 503 readonly', async () => {

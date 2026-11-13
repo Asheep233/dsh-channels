@@ -133,6 +133,8 @@ export declare class ChannelsHub {
     /** False when another live hub owns the data directory (or config says so). */
     readonly writer: boolean;
     readonly readonlyReason?: string;
+    /** This instance's lock owner id (guards release after a hot-reload takeover). */
+    private readonly lockNonce;
     private readonly channelQueues;
     private readonly clients;
     private readonly timers;

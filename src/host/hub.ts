@@ -298,6 +298,8 @@ export class ChannelsHub {
   /** False when another live hub owns the data directory (or config says so). */
   readonly writer: boolean
   readonly readonlyReason?: string
+  /** This instance's lock owner id (guards release after a hot-reload takeover). */
+  private readonly lockNonce: string | undefined
 
   private readonly channelQueues = new SerialQueue()
   private readonly clients = new Set<SseClientState>()
@@ -328,6 +330,7 @@ export class ChannelsHub {
     this.lock = lock
     this.writer = lock.writer
     this.readonlyReason = lock.writer ? undefined : lock.reason
+    this.lockNonce = lock.writer ? lock.nonce : undefined
 
     this.store = new ChannelStore({
       dataDir: config.dataDir,
@@ -574,7 +577,7 @@ export class ChannelsHub {
     this.clients.clear()
     this.endPrefsWatch()
     this.store.close()
-    if (this.writer) releaseHubLock(this.store.lockFile)
+    if (this.writer) releaseHubLock(this.store.lockFile, this.lockNonce)
     if (this.endpointOwned) {
       this.store.removeEndpointFile()
       this.endpointOwned = false

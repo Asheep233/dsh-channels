@@ -1,4 +1,4 @@
-# dsh-channels
+# dsh-channels · 频道管家
 
 [English](./README.md) | **简体中文**
 

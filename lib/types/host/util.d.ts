@@ -139,11 +139,14 @@ export declare const LOCK_TOUCH_MS = 20000;
 export interface HubLockFile {
     readonly pid: number;
     readonly startedAt: string;
+    /** Random owner id: a newer keeper in the same process may take over the lock. */
+    readonly nonce?: string;
 }
 export type HubLockAcquisition = {
     readonly writer: true;
     readonly staleTakenOver: boolean;
     readonly lockFile: string;
+    readonly nonce: string;
 } | {
     readonly writer: false;
     readonly reason: string;
@@ -162,5 +165,8 @@ export declare function isPidAlive(pid: number): boolean;
 export declare function acquireHubLock(file: string): HubLockAcquisition;
 /** Refresh the lock mtime so other instances see a live writer. */
 export declare function touchFile(file: string): void;
-/** Release the lock only when this pid still owns it. */
-export declare function releaseHubLock(file: string): void;
+/**
+ * Release the lock only when this hub instance still owns it. `nonce` guards
+ * the hot-reload case where a newer instance already took over.
+ */
+export declare function releaseHubLock(file: string, nonce?: string): void;

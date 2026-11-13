@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.3 — 2026-11-14
+
+Branding and hot-reload lock fix.
+
+- The channel panel is now labelled **频道管家** in the sidebar (icon row, footer shortcut and channel-list header); the plugin id/tool namespace stays `dsh-channels`.
+- Fixed a hot-reload bug where the new hub instance could start **read-only**: a `hub.lock` owned by the same process is now treated as a reload handoff, taken over with a fresh nonce. The previous instance's `releaseHubLock()` can no longer remove the new owner's lock. Channel writes keep working after `dev_reload_package`.
+- Tests: 217 tests / 59 suites (new same-process lock takeover case).
+
 ## v0.3.2 — 2026-11-10
 
 Message timestamps now include the full date.

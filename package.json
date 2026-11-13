@@ -1,6 +1,6 @@
 {
   "name": "dsh-channels",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Discord-style channel IM for DeepSeek Harness: public channels, immutable persistent history, @mention wake, cross-harness HTTP/MCP access.",
   "type": "module",
   "main": "./lib/index.js",

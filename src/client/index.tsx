@@ -124,8 +124,8 @@ export function ChannelsFooterAction({ wide = true }: FooterActionProps): React.
   return (
     <button
       type="button"
-      aria-label="频道"
-      title="频道"
+      aria-label="频道管家"
+      title="频道管家"
       data-dsh-channels-footer="true"
       onClick={() => {
         layoutService?.selectPanel(PANEL_ID)
@@ -148,7 +148,7 @@ export function ChannelsFooterAction({ wide = true }: FooterActionProps): React.
       }}
     >
       <ChannelsIcon size={16} />
-      {wide ? <span>频道</span> : null}
+      {wide ? <span>频道管家</span> : null}
     </button>
   )
 }
@@ -186,7 +186,7 @@ export function apply(ctx: ClientContext): void {
           name: 'sidebar.panellist',
           id: PANEL_ID,
           order: 30,
-          label: '频道',
+          label: '频道管家',
         },
         ChannelsIcon,
       ),
@@ -212,7 +212,7 @@ export function apply(ctx: ClientContext): void {
           name: 'sidebar.footer.action',
           id: 'dsh-channels-footer',
           order: 40,
-          label: '频道',
+          label: '频道管家',
         },
         ChannelsFooterAction,
       ),

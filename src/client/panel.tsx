@@ -2713,7 +2713,7 @@ export function ChannelsPanel(): React.ReactElement {
       {/* ===== 左栏：频道列表 ===== */}
       <aside className="dshch-col-left">
         <div className="dshch-left-head">
-          <span>频道</span>
+          <span>频道管家</span>
           <button
             type="button"
             className="dshch-icon-btn"

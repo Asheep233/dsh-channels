@@ -396,10 +396,12 @@ export const LOCK_TOUCH_MS = 20_000
 export interface HubLockFile {
   readonly pid: number
   readonly startedAt: string
+  /** Random owner id: a newer keeper in the same process may take over the lock. */
+  readonly nonce?: string
 }
 
 export type HubLockAcquisition =
-  | { readonly writer: true; readonly staleTakenOver: boolean; readonly lockFile: string }
+  | { readonly writer: true; readonly staleTakenOver: boolean; readonly lockFile: string; readonly nonce: string }
   | { readonly writer: false; readonly reason: string; readonly holder?: HubLockFile; readonly lockFile: string }
 
 /** True when the pid is alive (or exists but is not signalable by us). */
@@ -416,10 +418,14 @@ export function isPidAlive(pid: number): boolean {
 }
 
 function readLockFile(file: string): HubLockFile | undefined {
-  const raw = readJsonFile<{ pid?: unknown; startedAt?: unknown }>(file)
+  const raw = readJsonFile<{ pid?: unknown; startedAt?: unknown; nonce?: unknown }>(file)
   if (raw === undefined) return undefined
   if (typeof raw.pid !== 'number' || !Number.isInteger(raw.pid)) return undefined
-  return { pid: raw.pid, startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : '' }
+  return {
+    pid: raw.pid,
+    startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : '',
+    ...(typeof raw.nonce === 'string' ? { nonce: raw.nonce } : {}),
+  }
 }
 
 function tryCreateLock(file: string, body: HubLockFile): boolean {
@@ -435,7 +441,10 @@ function tryCreateLock(file: string, body: HubLockFile): boolean {
 function lockIsStale(file: string, holder: HubLockFile | undefined): boolean {
   if (holder === undefined) return true
   if (!isPidAlive(holder.pid)) return true
-  if (holder.pid === process.pid) return false
+  // A lock owned by *this* process is a hot-reload handoff: the new module
+  // instance takes over and the old instance's releaseHubLock() is a no-op
+  // because the nonce no longer matches. Cross-process locks are still strict.
+  if (holder.pid === process.pid) return true
   // A live writer refreshes the file's mtime every LOCK_TOUCH_MS; an mtime
   // older than LOCK_STALE_MS means that writer is wedged.
   try {
@@ -455,8 +464,9 @@ function lockIsStale(file: string, holder: HubLockFile | undefined): boolean {
  */
 export function acquireHubLock(file: string): HubLockAcquisition {
   ensureParent(file)
-  const self: HubLockFile = { pid: process.pid, startedAt: isoNow() }
-  if (tryCreateLock(file, self)) return { writer: true, staleTakenOver: false, lockFile: file }
+  const nonce = randomUUID()
+  const self: HubLockFile = { pid: process.pid, startedAt: isoNow(), nonce }
+  if (tryCreateLock(file, self)) return { writer: true, staleTakenOver: false, lockFile: file, nonce }
 
   let holder = readLockFile(file)
   if (!lockIsStale(file, holder)) {
@@ -469,7 +479,7 @@ export function acquireHubLock(file: string): HubLockAcquisition {
   } catch {
     /* someone else already cleaned it up */
   }
-  if (tryCreateLock(file, self)) return { writer: true, staleTakenOver: true, lockFile: file }
+  if (tryCreateLock(file, self)) return { writer: true, staleTakenOver: true, lockFile: file, nonce }
   holder = readLockFile(file)
   return { writer: false, reason: 'lost the stale-lock takeover race', holder, lockFile: file }
 }
@@ -484,10 +494,14 @@ export function touchFile(file: string): void {
   }
 }
 
-/** Release the lock only when this pid still owns it. */
-export function releaseHubLock(file: string): void {
+/**
+ * Release the lock only when this hub instance still owns it. `nonce` guards
+ * the hot-reload case where a newer instance already took over.
+ */
+export function releaseHubLock(file: string, nonce?: string): void {
   const holder = readLockFile(file)
   if (holder !== undefined && holder.pid !== process.pid) return
+  if (holder !== undefined && nonce !== undefined && holder.nonce !== undefined && holder.nonce !== nonce) return
   try {
     rmSync(file, { force: true })
   } catch {
