@@ -109,6 +109,7 @@ MCP 暴露 15 个工具（register/send/search/join/leave/history/list/members/w
     wakeRateMs: 5000
     maxTextBytes: 8192
     maxAttachmentBytes: 26214400
+    lockWaitMs: 10000                  # 启动时等待上一个 dsh web 进程释放 hub.lock
     defaultChannels: [general, lobby]  # 所有 agent 默认加入
     defaultMembers: []                 # 自动加入所有频道的 handle
 ```

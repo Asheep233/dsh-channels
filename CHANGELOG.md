@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.5 — 2026-11-26
+
+Fix the remaining permanent read-only case on restart.
+
+- `lockIsStale()` already takes over a same-process `hub.lock` (hot reload / stale same-pid lock) with a fresh nonce since v0.3.3; that path is regression-tested with a frozen 22h-old mtime now.
+- **Startup lock wait**: `acquireHubLockWithWait()` retries for up to `lockWaitMs` (default 10s) when another *live process* still owns `hub.lock` — e.g. the old `dsh web` is still shutting down. The new hub becomes the writer instead of staying read-only forever.
+- New tests: frozen same-pid stale lock, dying-writer startup wait; read-only fixtures opt out with `lockWaitMs: 0`. 218 tests / 59 suites.
+- `GET /health` already exposes `readonlyReason` for diagnosis.
+
 ## v0.3.4 — 2026-11-14
 
 Panel label revert.

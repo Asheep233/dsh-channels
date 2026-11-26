@@ -611,7 +611,7 @@ describe('80 M3 attachments: limits & durability (hermetic)', () => {
     const { seedChannel, seedLock } = await import('./_helpers.mjs')
     seedChannel(dataDir, 'general', [])
     seedLock(dataDir, process.pid === 1 ? 2 : 1) // pid 1 is init: alive, not us
-    const hub = applyHub(makeFakeCtx(), { dataDir, wake: false })
+    const hub = applyHub(makeFakeCtx(), { dataDir, wake: false, lockWaitMs: 0 })
     assert.ok(hub !== undefined)
     try {
       assert.equal(hub.writer, false)
@@ -627,7 +627,7 @@ describe('80 M3 attachments: limits & durability (hermetic)', () => {
   test('attachments and message references survive a host restart', async () => {
     const dataDir = tempDir('att-restart')
     const channel = 'qa-att-restart'
-    let hub1 = applyHub(makeFakeCtx(), { dataDir, wake: false })
+    let hub1 = applyHub(makeFakeCtx(), { dataDir, wake: false, lockWaitMs: 0 })
     assert.ok(hub1 !== undefined)
     let attachment
     let messageId
@@ -646,7 +646,7 @@ describe('80 M3 attachments: limits & durability (hermetic)', () => {
       hub1.dispose()
     }
 
-    const hub2 = applyHub(makeFakeCtx(), { dataDir, wake: false })
+    const hub2 = applyHub(makeFakeCtx(), { dataDir, wake: false, lockWaitMs: 0 })
     assert.ok(hub2 !== undefined)
     try {
       const meta = hub2.attachmentMeta(attachment.id)

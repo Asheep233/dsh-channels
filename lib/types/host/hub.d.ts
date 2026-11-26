@@ -43,6 +43,8 @@ export interface ChannelsConfig {
     readonly streamKeepaliveMs: number;
     readonly idempotencyTtlMs: number;
     readonly lockTouchMs: number;
+    /** How long startup waits for a previous writer process to release hub.lock. */
+    readonly lockWaitMs: number;
     /** Handles auto-joined to every channel (see `default-members.json` too). */
     readonly defaultMembers: readonly string[];
     /** Channels every agent joins by default (general always; this machine: general,lobby). */

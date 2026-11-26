@@ -174,7 +174,7 @@ describe('86 M4 session-prefs: HTTP (live)', () => {
 describe('86 M4 session-prefs: persistence (hermetic)', () => {
   test('hidden/muted survive a hub restart and are stored atomically', async () => {
     const dataDir = tempDir('m4-persist')
-    const hub1 = applyHub(makeFakeCtx(), { dataDir, wake: false })
+    const hub1 = applyHub(makeFakeCtx(), { dataDir, wake: false, lockWaitMs: 0 })
     assert.ok(hub1 !== undefined)
     try {
       const prefs = await hub1.setSessionPrefs('qa-session-persist', { hidden: true, muted: true }, 'tester')
@@ -188,7 +188,7 @@ describe('86 M4 session-prefs: persistence (hermetic)', () => {
       hub1.dispose()
     }
 
-    const hub2 = applyHub(makeFakeCtx(), { dataDir, wake: false })
+    const hub2 = applyHub(makeFakeCtx(), { dataDir, wake: false, lockWaitMs: 0 })
     assert.ok(hub2 !== undefined)
     try {
       const prefs = hub2.sessionPrefsFor('qa-session-persist')
@@ -242,7 +242,7 @@ describe('86 M4 session-prefs: persistence (hermetic)', () => {
     const { seedChannel, seedLock } = await import('./_helpers.mjs')
     seedChannel(dataDir, 'general', [])
     seedLock(dataDir, 1) // pid 1: alive, not us → read-only
-    const hub = applyHub(makeFakeCtx(), { dataDir, wake: false })
+    const hub = applyHub(makeFakeCtx(), { dataDir, wake: false, lockWaitMs: 0 })
     assert.ok(hub !== undefined)
     try {
       assert.equal(hub.writer, false)
@@ -359,7 +359,7 @@ describe('86 M4 hidden: tool masking (hermetic)', () => {
 
   test('persisted hidden prefs mask live agents on hub startup', async () => {
     const dataDir = tempDir('m4-mask-startup')
-    const hub1 = applyHub(makeFakeCtx(), { dataDir, wake: false })
+    const hub1 = applyHub(makeFakeCtx(), { dataDir, wake: false, lockWaitMs: 0 })
     assert.ok(hub1 !== undefined)
     try {
       await hub1.setSessionPrefs(SESSION, { hidden: true }, 'tester')

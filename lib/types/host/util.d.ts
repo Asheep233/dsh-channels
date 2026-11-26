@@ -163,6 +163,20 @@ export declare function isPidAlive(pid: number): boolean;
  * - stale holder (dead pid, or mtime older than 60s) → take over
  */
 export declare function acquireHubLock(file: string): HubLockAcquisition;
+/**
+ * Acquire the lock, waiting briefly while another live writer is still exiting.
+ *
+ * A DSH restart/supervisor handoff can start the new process before the old one
+ * has released `hub.lock`; without this wait the new hub starts read-only and
+ * never recovers (the `writer` flag is fixed for the lifetime of the hub).
+ * Same-process (hot-reload) locks are taken over immediately by
+ * {@link acquireHubLock}, so this only waits on a different live pid.
+ *
+ * @param file - `hub.lock` path.
+ * @param waitMs - max time to wait (0 disables the wait).
+ * @returns writer when acquired; otherwise the last read-only acquisition.
+ */
+export declare function acquireHubLockWithWait(file: string, waitMs: number): HubLockAcquisition;
 /** Refresh the lock mtime so other instances see a live writer. */
 export declare function touchFile(file: string): void;
 /**

@@ -59,7 +59,7 @@ import {
   HostError,
   LOCK_TOUCH_MS as DEFAULT_LOCK_TOUCH_MS,
   SerialQueue,
-  acquireHubLock,
+  acquireHubLockWithWait,
   ensureDir,
   errMessage,
   isoNow,
@@ -97,6 +97,8 @@ export interface ChannelsConfig {
   readonly streamKeepaliveMs: number
   readonly idempotencyTtlMs: number
   readonly lockTouchMs: number
+  /** How long startup waits for a previous writer process to release hub.lock. */
+  readonly lockWaitMs: number
   /** Handles auto-joined to every channel (see `default-members.json` too). */
   readonly defaultMembers: readonly string[]
   /** Channels every agent joins by default (general always; this machine: general,lobby). */
@@ -115,6 +117,11 @@ function messageChannelOf(data: unknown): string | undefined {
 function positiveNumber(value: unknown, fallback: number): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+function nonNegativeNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
 
 function boolValue(value: unknown, fallback: boolean): boolean {
@@ -148,6 +155,7 @@ export function normalizeConfig(raw: unknown, resolveDataDir: (configured?: unkn
     streamKeepaliveMs: positiveNumber(pick('streamKeepaliveMs', 'heartbeatMs'), 15_000),
     idempotencyTtlMs: positiveNumber(pick('idempotencyTtlMs'), 10 * 60_000),
     lockTouchMs: positiveNumber(pick('lockTouchMs'), DEFAULT_LOCK_TOUCH_MS),
+    lockWaitMs: nonNegativeNumber(pick('lockWaitMs'), 10_000),
     defaultMembers: normalizeDefaultMembers(pick('defaultMembers', 'autoJoinMembers')),
     defaultChannels: normalizeDefaultChannels(pick('defaultChannels', 'autoJoinChannels')),
   }
@@ -326,7 +334,7 @@ export class ChannelsHub {
     ensureDir(config.dataDir)
     const lock: HubLockAcquisition = config.readonly
       ? { writer: false, reason: 'configured readonly', lockFile: `${config.dataDir}/hub.lock` }
-      : acquireHubLock(`${config.dataDir}/hub.lock`)
+      : acquireHubLockWithWait(`${config.dataDir}/hub.lock`, config.lockWaitMs)
     this.lock = lock
     this.writer = lock.writer
     this.readonlyReason = lock.writer ? undefined : lock.reason

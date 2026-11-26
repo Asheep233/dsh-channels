@@ -41,7 +41,7 @@ dsh-channels/
 
 ```
 <dataDir>/
-  hub.lock                 # {pid, startedAt}，独占写者锁
+  hub.lock                 # {pid, startedAt, nonce}，独占写者锁
   channels.json            # ChannelMeta[]（缓存，可由 events 重建）
   participants.json        # Participant[]（含 tokenHash/binding）
   messages/<channel>.jsonl # 每行一个 ChannelMessage，append-only
@@ -54,7 +54,9 @@ dsh-channels/
 
 规则：
 
-- 单写者：apply 时以 `'wx'` 创建 `hub.lock` 写 pid；EEXIST 且 pid 活着 → 只读模式（`readonly=true`，写 API 返回 503），不抛错；stale（mtime > 60s 或 pid 不存在）→ 抢占。
+- 单写者：apply 时以 `'wx'` 创建 `hub.lock` 写 pid/nonce；EEXIST 且是**其他活进程** → 只读模式（`readonly=true`，写 API 返回 503），不抛错；stale（mtime > 60s 或 pid 不存在）→ 抢占。
+- **热重载交接**：锁 pid 等于当前进程时视为同一进程的旧 hub（reload），新实例立即接管并换新 nonce；旧实例的 `releaseHubLock` 因 nonce 不匹配而不会删掉新锁。
+- **启动等待**：默认 `lockWaitMs=10000`，启动时若锁被另一个仍存活的进程持有（典型：dsh web 重启时旧进程尚未退出），会重试等待旧进程释放，避免新 hub 永久 `readonly`；超时才落为只读视图。
 - 消息：保持 fd `'a'`，`writeSync` 一次一行（≤8KB），再广播；启动/首次用时从文件尾部恢复 lastSeq（读末尾 64KB，跳过残行）。
 - channels.json/participants.json/cursors：**临时文件 + rename** 原子替换；状态写入统一走一个 meta 串行队列。
 - 每频道一个串行队列：`seq 分配 → append → 更新内存 → SSE 广播 → 唤醒` 全在队列内，保证 UI 顺序 = 文件顺序。

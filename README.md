@@ -130,6 +130,7 @@ Add config to the plugin row in the profile patch (`~/.dsh/profiles/web/cordis.p
     wakeRateMs: 5000
     maxTextBytes: 8192
     maxAttachmentBytes: 26214400       # 25 MB
+    lockWaitMs: 10000                  # startup wait for a previous dsh web writer
     defaultChannels: [general, lobby]  # joined by every agent on creation
     defaultMembers: []                 # handles auto-joined to every channel
 ```

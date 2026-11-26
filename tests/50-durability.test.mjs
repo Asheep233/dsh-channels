@@ -10,7 +10,8 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 
@@ -36,8 +37,8 @@ import {
 const state = {}
 const tempDirs = []
 
-function makeHermeticHub(dataDir) {
-  const hub = applyHub(makeFakeCtx(), { dataDir, wake: false })
+function makeHermeticHub(dataDir, overrides = {}) {
+  const hub = applyHub(makeFakeCtx(), { dataDir, wake: false, ...overrides })
   return hub
 }
 
@@ -263,6 +264,9 @@ describe('50 durability (hermetic): hub.lock single-writer rules', () => {
     const dataDir = tempDir('dur-reload-lock')
     seedChannel(dataDir, 'general', [])
     const lockFile = seedLock(dataDir, process.pid)
+    // Mirror the reported restart case: the stale lock's mtime is hours old.
+    const old = new Date(Date.now() - 22 * 60 * 60_000)
+    utimesSync(lockFile, old, old)
     const hub = makeHermeticHub(dataDir)
     try {
       assert.ok(hub !== undefined)
@@ -279,13 +283,47 @@ describe('50 durability (hermetic): hub.lock single-writer rules', () => {
     assert.equal(existsSync(lockFile), false, 'the current owner releases on dispose')
   })
 
+  test('startup waits for a dying writer process and then becomes the writer', async () => {
+    const dataDir = tempDir('dur-wait-writer')
+    seedChannel(dataDir, 'general', [])
+    // Use a short-lived *orphan* process as the lock holder: a direct child would
+    // become a zombie while the synchronous startup wait blocks the event loop,
+    // and a zombie still answers kill(pid, 0) as alive.
+    const launcher = spawn('sh', ['-c', 'sleep 1 & echo $!'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const holderPid = await new Promise((resolve) => {
+      launcher.stdout.once('data', (chunk) => resolve(Number(String(chunk).trim())))
+    })
+    assert.ok(Number.isInteger(holderPid) && holderPid > 0, `bad holder pid: ${holderPid}`)
+    try {
+      const lockFile = seedLock(dataDir, holderPid)
+      const startedAt = Date.now()
+      const hub = makeHermeticHub(dataDir, { lockWaitMs: 3_000 })
+      try {
+        assert.ok(hub !== undefined)
+        assert.equal(hub.writer, true, 'must wait for the exiting writer instead of staying read-only')
+        assert.equal(hub.health().readonly, false)
+        assert.equal(JSON.parse(readFileSync(lockFile, 'utf8')).pid, process.pid)
+        assert.ok(Date.now() - startedAt >= 300, 'should have waited for the old holder to exit')
+      } finally {
+        hub?.dispose()
+      }
+    } finally {
+      try {
+        process.kill(holderPid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+      launcher.kill()
+    }
+  })
+
   test('a live lock makes a second hub read-only: writes return 503 readonly', async () => {
     const live = await health()
     const dataDir = tempDir('dur-live-lock')
     seedChannel(dataDir, 'general', [])
     const lockFile = seedLock(dataDir, live.pid)
     const lockBefore = readFileSync(lockFile, 'utf8')
-    const hub = makeHermeticHub(dataDir)
+    const hub = makeHermeticHub(dataDir, { lockWaitMs: 0 })
     try {
       assert.ok(hub !== undefined)
       assert.equal(hub.writer, false, 'live writer pid must not be preempted')
